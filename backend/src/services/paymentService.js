@@ -4,6 +4,7 @@ import {
   findMatchingPayment,
   createRefundTransaction,
   findStrictReceivePaths,
+  isValidStellarPublicKey,
   verifyTransactionSignature,
 } from "../lib/stellar.js";
 import { resolveBrandingConfig } from "../lib/branding.js";
@@ -17,7 +18,7 @@ import {
   setCachedPayment,
   invalidatePaymentCache,
 } from "../lib/redis.js";
-import { ASSET_DEFAULTS } from "../constants/assetConstants.js";
+import { resolveAssetIssuer } from "../constants/assetConstants.js";
 import {
   paymentCreatedCounter,
   paymentConfirmedCounter,
@@ -458,6 +459,21 @@ async function getRollingMetricsViaSupabase(merchantId) {
 export const paymentService = {
   async createPaymentSession(merchant, body) {
     const supabase = await getSupabaseClient();
+    const asset = body.asset?.toUpperCase();
+    const assetIssuer = resolveAssetIssuer(asset, body.asset_issuer);
+
+    if (asset !== "XLM" && !assetIssuer) {
+      const error = new Error("asset_issuer is required for non-native assets");
+      error.status = 400;
+      throw error;
+    }
+
+    if (asset !== "XLM" && !isValidStellarPublicKey(assetIssuer)) {
+      const error = new Error("asset_issuer must be a valid Stellar public key");
+      error.status = 400;
+      throw error;
+    }
+
     // Per-asset payment limit validation
     const limits = merchant.payment_limits;
     if (limits && typeof limits === "object") {
@@ -488,8 +504,8 @@ export const paymentService = {
 
     // Allowed-issuers check
     const allowedIssuers = merchant.allowed_issuers;
-    if (Array.isArray(allowedIssuers) && allowedIssuers.length > 0) {
-      if (!body.asset_issuer || !allowedIssuers.includes(body.asset_issuer)) {
+    if (asset !== "XLM" && Array.isArray(allowedIssuers) && allowedIssuers.length > 0) {
+      if (!assetIssuer || !allowedIssuers.includes(assetIssuer)) {
         paymentFailedCounter.inc({ asset: body.asset, reason: "invalid_issuer" });
         const error = new Error("asset_issuer is not in the merchant's list of allowed issuers");
         error.status = 400;
@@ -511,19 +527,14 @@ export const paymentService = {
     metadata.branding_config = resolvedBranding;
 
     const network = (process.env.STELLAR_NETWORK || "testnet").toLowerCase();
-    const asset = body.asset?.toUpperCase();
-    let assetIssuer = body.asset_issuer;
-
-    if (!assetIssuer && ASSET_DEFAULTS[asset]) {
-      assetIssuer = ASSET_DEFAULTS[asset][network] || ASSET_DEFAULTS[asset]["testnet"];
-    }
+    const resolvedAssetIssuer = resolveAssetIssuer(asset, assetIssuer, network);
 
     const payload = {
       id: paymentId,
       merchant_id: merchant.id,
       amount: body.amount,
       asset: asset,
-      asset_issuer: assetIssuer || null,
+      asset_issuer: resolvedAssetIssuer || null,
       recipient: body.recipient,
       description: body.description || null,
       memo: body.memo || null,

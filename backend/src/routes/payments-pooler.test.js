@@ -33,6 +33,8 @@ vi.mock("../lib/stellar.js", () => ({
   findAnyRecentPayment: mockFindAnyRecentPayment,
   findStrictReceivePaths: vi.fn(),
   getNetworkFeeStats: vi.fn(),
+  isValidStellarPublicKey: vi.fn(() => true),
+  validateMemo: vi.fn(() => ({ valid: true })),
   verifyTransactionSignature: mockVerifyTransactionSignature,
 }));
 

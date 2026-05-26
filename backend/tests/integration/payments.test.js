@@ -248,6 +248,7 @@ vi.mock("../../src/lib/stellar.js", () => ({
   verifyTransactionSignature: (...args) => mockVerifyTransactionSignature(...args),
   getNetworkFeeStats: (...args) => mockGetNetworkFeeStats(...args),
   isHorizonReachable: vi.fn(async () => true),
+  isValidStellarPublicKey: vi.fn(() => true),
   resolveAsset: vi.fn(),
   createRefundTransaction: vi.fn(),
   findStrictReceivePaths: vi.fn(),

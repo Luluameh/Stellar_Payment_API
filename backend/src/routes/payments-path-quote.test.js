@@ -9,7 +9,12 @@ const { findStrictReceivePaths, supabaseFrom } = vi.hoisted(() => ({
 vi.mock("../lib/stellar.js", () => ({
     findStrictReceivePaths,
     findMatchingPayment: vi.fn(),
+    findAnyRecentPayment: vi.fn(),
     createRefundTransaction: vi.fn(),
+    getNetworkFeeStats: vi.fn(),
+    isValidStellarPublicKey: vi.fn(() => true),
+    validateMemo: vi.fn(() => ({ valid: true })),
+    verifyTransactionSignature: vi.fn(),
 }));
 
 vi.mock("../lib/supabase.js", () => ({

@@ -5,6 +5,7 @@ const {
   mockIsRetryablePoolError,
   mockSupabaseFrom,
   mockFindMatchingPayment,
+  mockIsValidStellarPublicKey,
   mockVerifyTransactionSignature,
   mockConnectRedisClient,
   mockGetCachedPayment,
@@ -20,6 +21,7 @@ const {
   mockIsRetryablePoolError: vi.fn(),
   mockSupabaseFrom: vi.fn(),
   mockFindMatchingPayment: vi.fn(),
+  mockIsValidStellarPublicKey: vi.fn(),
   mockVerifyTransactionSignature: vi.fn(),
   mockConnectRedisClient: vi.fn(),
   mockGetCachedPayment: vi.fn(),
@@ -47,6 +49,7 @@ vi.mock("../lib/stellar.js", () => ({
   findMatchingPayment: mockFindMatchingPayment,
   createRefundTransaction: vi.fn(),
   findStrictReceivePaths: vi.fn(),
+  isValidStellarPublicKey: mockIsValidStellarPublicKey,
   verifyTransactionSignature: mockVerifyTransactionSignature,
 }));
 
@@ -86,9 +89,12 @@ vi.mock("../lib/metrics.js", () => ({
 
 import { paymentService } from "./paymentService.js";
 
+const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
 describe("paymentService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsValidStellarPublicKey.mockReturnValue(true);
     mockResolveBrandingConfig.mockReturnValue({ primary_color: "#000000" });
     mockConnectRedisClient.mockResolvedValue({ isOpen: false });
     mockGetCachedPayment.mockResolvedValue(null);
@@ -162,6 +168,39 @@ describe("paymentService", () => {
       page: 1,
       limit: 20,
     });
+  });
+
+  it("resolves default asset issuers before allowlist checks and inserts", async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    mockSupabaseFrom.mockReturnValue({ insert });
+
+    const result = await paymentService.createPaymentSession(
+      {
+        id: "merchant-1",
+        allowed_issuers: [USDC_TESTNET_ISSUER],
+        payment_limits: {},
+        branding_config: {},
+      },
+      {
+        amount: 12.5,
+        asset: "USDC",
+        recipient: "GRECIPIENT",
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: "pending",
+      branding_config: { primary_color: "#000000" },
+    });
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        merchant_id: "merchant-1",
+        amount: 12.5,
+        asset: "USDC",
+        asset_issuer: USDC_TESTNET_ISSUER,
+        recipient: "GRECIPIENT",
+      }),
+    );
   });
 
   it("falls back to Supabase when the pooler exhausts retryable errors", async () => {

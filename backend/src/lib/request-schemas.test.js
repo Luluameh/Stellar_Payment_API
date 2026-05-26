@@ -9,12 +9,14 @@ import {
   v2PaymentSessionSchema,
 } from "./request-schemas.js";
 
+const USDC_TESTNET_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
 describe("paymentZodSchema", () => {
   it("parses and normalizes a valid create-payment request", () => {
     const result = paymentZodSchema.parse({
       amount: "42.5",
       asset: "usdc",
-      asset_issuer: " GISSUER ",
+      asset_issuer: ` ${USDC_TESTNET_ISSUER} `,
       recipient: " GRECIPIENT ",
       client_id: " store-01 ",
       memo: " Order-123 ",
@@ -26,7 +28,7 @@ describe("paymentZodSchema", () => {
     expect(result).toEqual({
       amount: 42.5,
       asset: "USDC",
-      asset_issuer: "GISSUER",
+      asset_issuer: USDC_TESTNET_ISSUER,
       recipient: "GRECIPIENT",
       client_id: "store-01",
       description: undefined,
@@ -37,14 +39,46 @@ describe("paymentZodSchema", () => {
     });
   });
 
-  it("requires asset_issuer for non-native assets", () => {
+  it("recovers the default issuer for configured non-native assets", () => {
+    const result = paymentZodSchema.parse({
+      amount: 50,
+      asset: "USDC",
+      recipient: "GRECIPIENT",
+    });
+
+    expect(result.asset_issuer).toBe(USDC_TESTNET_ISSUER);
+  });
+
+  it("requires asset_issuer for non-native assets without configured defaults", () => {
     expect(() =>
       paymentZodSchema.parse({
         amount: 50,
-        asset: "USDC",
+        asset: "EURC",
         recipient: "GRECIPIENT",
       })
     ).toThrowError("asset_issuer is required for non-native assets");
+  });
+
+  it("rejects invalid asset_issuer public keys", () => {
+    expect(() =>
+      paymentZodSchema.parse({
+        amount: 50,
+        asset: "EURC",
+        asset_issuer: "issuer-1",
+        recipient: "GRECIPIENT",
+      })
+    ).toThrowError("asset_issuer must be a valid Stellar public key");
+  });
+
+  it("ignores asset_issuer for native XLM payments", () => {
+    const result = paymentZodSchema.parse({
+      amount: 50,
+      asset: "XLM",
+      asset_issuer: USDC_TESTNET_ISSUER,
+      recipient: "GRECIPIENT",
+    });
+
+    expect(result.asset_issuer).toBeUndefined();
   });
 
   it("requires memo_type when memo is provided", () => {
@@ -202,8 +236,8 @@ describe("paymentZodSchema", () => {
   it("does not apply the XLM minimum to non-native assets", () => {
     const result = paymentZodSchema.parse({
       amount: 0.0000001,
-      asset: "USDC",
-      asset_issuer: "GISSUER",
+      asset: "EURC",
+      asset_issuer: USDC_TESTNET_ISSUER,
       recipient: "GRECIPIENT",
     });
 

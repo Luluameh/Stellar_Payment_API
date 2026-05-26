@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { logger } from "../lib/logger.js";
 import express from "express";
 import { paymentService } from "../services/paymentService.js";
+import { resolveAssetIssuer } from "../constants/assetConstants.js";
 import { validateUuidParam } from "../lib/validate-uuid.js";
 import {
   paymentSessionZodSchema,
@@ -41,6 +42,7 @@ import {
   findAnyRecentPayment,
   findStrictReceivePaths,
   getNetworkFeeStats,
+  isValidStellarPublicKey,
   verifyTransactionSignature,
 } from "../lib/stellar.js";
 
@@ -236,7 +238,23 @@ function createPaymentsRouter({
     try {
       const supabase = await getSupabaseClient();
       const body = req.body;
+      const asset = body.asset?.toUpperCase();
+      const assetIssuer = resolveAssetIssuer(asset, body.asset_issuer);
       logger.info({ merchantId: req.merchant?.id, amount: body.amount, asset: body.asset }, "DEBUG: createSession started");
+
+      if (asset !== "XLM" && !assetIssuer) {
+        paymentFailedCounter.inc({ asset: body.asset, reason: "missing_issuer" });
+        return res.status(400).json({
+          error: "asset_issuer is required for non-native assets",
+        });
+      }
+
+      if (asset !== "XLM" && !isValidStellarPublicKey(assetIssuer)) {
+        paymentFailedCounter.inc({ asset: body.asset, reason: "invalid_issuer" });
+        return res.status(400).json({
+          error: "asset_issuer must be a valid Stellar public key",
+        });
+      }
 
       // Per-asset payment limit validation (#153)
       const limits = req.merchant.payment_limits;
@@ -265,8 +283,8 @@ function createPaymentsRouter({
       // Allowed-issuers check: if the merchant has configured a non-empty
       // allowlist, only those issuer addresses may be used.
       const allowedIssuers = req.merchant.allowed_issuers;
-      if (Array.isArray(allowedIssuers) && allowedIssuers.length > 0) {
-        if (!body.asset_issuer || !allowedIssuers.includes(body.asset_issuer)) {
+      if (asset !== "XLM" && Array.isArray(allowedIssuers) && allowedIssuers.length > 0) {
+        if (!assetIssuer || !allowedIssuers.includes(assetIssuer)) {
           paymentFailedCounter.inc({ asset: body.asset, reason: "invalid_issuer" });
           return res.status(400).json({
             error:
@@ -297,8 +315,8 @@ function createPaymentsRouter({
         id: paymentId,
         merchant_id: req.merchant.id,
         amount: body.amount,
-        asset: body.asset,
-        asset_issuer: body.asset_issuer || null,
+        asset,
+        asset_issuer: assetIssuer || null,
         recipient: body.recipient,
         description: body.description || null,
         memo: body.message || body.memo || null,
