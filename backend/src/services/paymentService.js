@@ -397,13 +397,16 @@ async function getRollingMetricsViaSupabase(merchantId) {
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
+  // No ORDER BY: the rows are bucketed by day into `metricsMap` and then read
+  // back through a fixed 7-day loop, so the result is independent of row order.
+  // Dropping the sort avoids an unnecessary ordering step on what can be a large
+  // 7-day window of a busy merchant's payments (issue #601).
   const { data: payments, error } = await supabase
     .from("payments")
     .select("amount, created_at, status")
     .eq("merchant_id", merchantId)
     .is("deleted_at", null)
-    .gte("created_at", sevenDaysAgo.toISOString())
-    .order("created_at", { ascending: true });
+    .gte("created_at", sevenDaysAgo.toISOString());
 
   if (error) {
     error.status = 500;
