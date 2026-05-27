@@ -15,6 +15,7 @@ import metricsRouter from "./routes/metrics.js";
 import webhooksRouter from "./routes/webhooks.js";
 import prometheusRouter from "./routes/prometheus.js";
 import sep0001Router from "./routes/sep0001.js";
+import createSep12Router from "./routes/sep12.js";
 import paymentDetailsRouter from "./routes/paymentDetails.js";
 import x402Router from "./routes/x402.js";
 import authRouter from "./routes/auth.js";
@@ -292,6 +293,9 @@ export async function createApp({ redisClient }) {
 
   // SEP-0001 stellar.toml endpoint (public, no auth required)
   app.use("/", sep0001Router);
+
+  // SEP-12 KYC endpoints (signature-gated; auth enforced per-request)
+  app.use("/", createSep12Router());
 
   // Prometheus Metrics endpoint
   app.use("/", prometheusRouter);
