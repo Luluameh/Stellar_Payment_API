@@ -38,7 +38,17 @@ export function SupportPanel() {
 
   const selectedBalance = (balances as any).find((b: any) => b.code === assetCode)?.balance ?? "0";
   const isUnfunded = visitorAddress && balances.length === 0 && !loadingBalance;
-  
+
+  // Single authoritative screen-reader announcement for real-time balance sync,
+  // so updates are spoken as one clear message instead of raw visual swaps.
+  const balanceAnnouncement = !visitorAddress
+    ? ""
+    : loadingBalance
+      ? "Syncing wallet balance…"
+      : isUnfunded
+        ? "Wallet is unfunded."
+        : `Balance synced: ${selectedBalance} ${assetCode}.`;
+
   const handleAmountChange = (val: string) => {
     setAmount(val);
   };
@@ -94,6 +104,11 @@ export function SupportPanel() {
 
   return (
     <div className="flex flex-col gap-5 p-1">
+      {/* Authoritative live region for real-time balance-sync announcements */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {balanceAnnouncement}
+      </div>
+
       <div className="space-y-4">
         {/* Wallet Info */}
         <div className="flex items-center justify-between text-[11px] font-mono uppercase tracking-wider">
@@ -109,7 +124,8 @@ export function SupportPanel() {
         <div className="space-y-1.5">
           <div className="flex justify-between items-end">
             <label className="text-xs font-semibold text-white" htmlFor="amount-input">Amount</label>
-            <div className="text-[10px] text-slate-400" aria-live="polite" aria-atomic="true">
+            {/* Visual-only — announcements are handled by the live region above. */}
+            <div className="text-[10px] text-slate-400">
               {loadingBalance ? (
                 <div className="flex items-center gap-2">
                   <span className="sr-only">Loading balance...</span>
