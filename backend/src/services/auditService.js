@@ -6,6 +6,7 @@ import {
   sanitizeAuditKey,
   sanitizeAuditValue,
   signAuditPayload,
+  validateAuditAction,
 } from "../lib/audit-security.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,6 +16,51 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUDIT_FALLBACK_LOG_PATH = process.env.AUDIT_FALLBACK_LOG_PATH || path.join(__dirname, "../../logs/audit_fallback.log");
 const AUDIT_DB_RETRY_ATTEMPTS = Number.parseInt(process.env.AUDIT_DB_RETRY_ATTEMPTS || "2", 10);
 const AUDIT_DB_RETRY_DELAY_MS = Number.parseInt(process.env.AUDIT_DB_RETRY_DELAY_MS || "100", 10);
+
+/**
+ * Circuit-breaker for the auditService DB path (issue #771).
+ * Mirrors the circuit in lib/audit.js so that both log paths independently
+ * protect against DB overload during outages.
+ */
+const SVC_CIRCUIT_FAILURE_THRESHOLD = Number.parseInt(process.env.AUDIT_CIRCUIT_FAILURE_THRESHOLD || "5", 10);
+const SVC_CIRCUIT_RESET_MS = Number.parseInt(process.env.AUDIT_CIRCUIT_RESET_MS || "60000", 10);
+
+const _svcCircuit = {
+  open: false,
+  failures: 0,
+  openedAt: 0,
+};
+
+export function _resetSvcCircuitForTests() {
+  _svcCircuit.open = false;
+  _svcCircuit.failures = 0;
+  _svcCircuit.openedAt = 0;
+}
+
+function isSvcCircuitOpen(now = Date.now()) {
+  if (!_svcCircuit.open) return false;
+  if (now - _svcCircuit.openedAt >= SVC_CIRCUIT_RESET_MS) {
+    _svcCircuit.open = false;
+    return false;
+  }
+  return true;
+}
+
+function recordSvcSuccess() {
+  _svcCircuit.failures = 0;
+  _svcCircuit.open = false;
+}
+
+function recordSvcFailure(now = Date.now()) {
+  _svcCircuit.failures += 1;
+  if (_svcCircuit.failures >= SVC_CIRCUIT_FAILURE_THRESHOLD) {
+    _svcCircuit.open = true;
+    _svcCircuit.openedAt = now;
+    console.warn(
+      `[auditService] Circuit breaker opened after ${_svcCircuit.failures} consecutive failures. DB writes suspended for ${SVC_CIRCUIT_RESET_MS}ms.`,
+    );
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,6 +81,10 @@ function writeFallbackLog(payload, error) {
 }
 
 async function insertAuditLog({ payload, payloadHash, signature }) {
+  if (isSvcCircuitOpen()) {
+    return { success: false, error: new Error("Circuit breaker open: DB writes suspended"), circuitOpen: true };
+  }
+
   for (let attempt = 0; attempt <= AUDIT_DB_RETRY_ATTEMPTS; attempt += 1) {
     try {
       await pool.query(
@@ -52,10 +102,12 @@ async function insertAuditLog({ payload, payloadHash, signature }) {
           signature,
         ],
       );
+      recordSvcSuccess();
       return { success: true };
     } catch (err) {
       const isRetryable = attempt < AUDIT_DB_RETRY_ATTEMPTS && isRetryablePoolError(err);
       if (!isRetryable) {
+        recordSvcFailure();
         return { success: false, error: err };
       }
       const delayMs = AUDIT_DB_RETRY_DELAY_MS * (attempt + 1);
@@ -65,10 +117,20 @@ async function insertAuditLog({ payload, payloadHash, signature }) {
       await sleep(delayMs);
     }
   }
+  recordSvcFailure();
   return { success: false, error: new Error("Max retry attempts exceeded") };
 }
 
 export const auditService = {
+  /**
+   * Retrieve paginated audit logs for a merchant.
+   *
+   * Uses a single SQL query with a COUNT(*) OVER() window function so that
+   * the total row count and the page data are fetched in one round-trip to
+   * the database instead of two (issue #770).  The composite index on
+   * (merchant_id, timestamp) created in migration 20260425000000 is used by
+   * the ORDER BY clause to avoid a sequential scan on large tables.
+   */
   async getAuditLogs(merchantId, page = 1, limit = 50) {
     let p = parseInt(page, 10) || 1;
     let l = parseInt(limit, 10) || 50;
@@ -79,25 +141,24 @@ export const auditService = {
 
     const offset = (p - 1) * l;
 
-    // Get total count
-    const countResult = await pool.query(
-      "SELECT COUNT(*) FROM audit_logs WHERE merchant_id = $1",
-      [merchantId]
-    );
-    const totalCount = parseInt(countResult.rows[0].count, 10);
-
-    // Get paginated logs
-    const logsResult = await pool.query(
-      `SELECT id, action, field_changed, old_value, new_value, ip_address, user_agent, timestamp
+    // Single query: window function returns the full-table count alongside
+    // each row, eliminating the separate COUNT(*) round-trip (issue #770).
+    const result = await pool.query(
+      `SELECT id, action, field_changed, old_value, new_value, ip_address, user_agent, timestamp,
+              COUNT(*) OVER() AS total_count
        FROM audit_logs
        WHERE merchant_id = $1
        ORDER BY timestamp DESC
        LIMIT $2 OFFSET $3`,
-      [merchantId, l, offset]
+      [merchantId, l, offset],
     );
 
+    const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
+    // Strip the synthetic total_count column from each returned row
+    const logs = result.rows.map(({ total_count: _tc, ...row }) => row);
+
     return {
-      logs: logsResult.rows,
+      logs,
       total_count: totalCount,
       total_pages: Math.ceil(totalCount / l),
       page: p,
@@ -114,6 +175,12 @@ export const auditService = {
     ipAddress,
     userAgent,
   }) {
+    // Reject unknown action values to prevent log-injection (issue #772)
+    if (!validateAuditAction(action)) {
+      console.error(`[auditService] Rejected disallowed audit action: ${action}`);
+      return;
+    }
+
     const rateLimitKey = createAuditLogRateLimitKey({
       merchantId,
       action,

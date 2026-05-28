@@ -5,6 +5,28 @@ const DEFAULT_AUDIT_RATE_LIMIT_MAX = 60;
 const DEFAULT_AUDIT_RATE_LIMIT_WINDOW_MS = 60_000;
 const DEFAULT_AUDIT_FIELD_MAX_LENGTH = 2048;
 
+/**
+ * Allowlist of permitted audit action identifiers.
+ * Restricting actions to a known set prevents log-injection attacks where
+ * a crafted action string embeds control characters or arbitrary content
+ * into the audit trail (issue #772).
+ */
+const ALLOWED_AUDIT_ACTIONS = new Set([
+  "login",
+  "logout",
+  "update",
+  "create",
+  "delete",
+  "export",
+  "import",
+  "password_change",
+  "api_key_rotate",
+  "webhook_trigger",
+  "payment_initiated",
+  "payment_confirmed",
+  "payment_failed",
+]);
+
 const auditRateLimitState = new Map();
 
 function stableStringify(value) {
@@ -64,6 +86,45 @@ export function signAuditPayload(payload, secret = process.env.AUDIT_LOG_SIGNING
     .createHmac("sha256", secret)
     .update(stableStringify(payload), "utf8")
     .digest("hex");
+}
+
+/**
+ * Verify a stored HMAC signature against the original payload using a
+ * constant-time comparison to prevent timing-oracle attacks (issue #769).
+ *
+ * @param {object} payload   - The original audit payload object
+ * @param {string} signature - The hex-encoded HMAC stored in the database
+ * @param {string} [secret]  - Signing secret (defaults to AUDIT_LOG_SIGNING_SECRET env var)
+ * @returns {boolean} true if the signature is valid and untampered
+ */
+export function verifyAuditSignature(payload, signature, secret = process.env.AUDIT_LOG_SIGNING_SECRET) {
+  if (!secret || !signature || typeof signature !== "string") return false;
+
+  const expected = signAuditPayload(payload, secret);
+  if (!expected) return false;
+
+  try {
+    // timingSafeEqual requires same-length Buffers; mismatched lengths → false
+    const expectedBuf = Buffer.from(expected, "hex");
+    const actualBuf = Buffer.from(signature, "hex");
+    if (expectedBuf.length !== actualBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, actualBuf);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate that an action string is within the known-safe allowlist before
+ * storing it in the audit trail.  Prevents log-injection through crafted
+ * action values (issue #772).
+ *
+ * @param {string} action
+ * @returns {boolean}
+ */
+export function validateAuditAction(action) {
+  if (!action || typeof action !== "string") return false;
+  return ALLOWED_AUDIT_ACTIONS.has(action.toLowerCase().trim());
 }
 
 export function createAuditLogRateLimitKey({ merchantId, action, ipAddress }) {

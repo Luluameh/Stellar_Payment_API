@@ -11,13 +11,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 
-const { mockQuery, mockIsRetryablePoolError, mockConsumeRateLimit, mockHashPayload, mockSignPayload, mockSanitizeAuditValue } = vi.hoisted(() => ({
+const { mockQuery, mockIsRetryablePoolError, mockConsumeRateLimit, mockHashPayload, mockSignPayload, mockSanitizeAuditValue, mockValidateAuditAction } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
   mockIsRetryablePoolError: vi.fn(),
   mockConsumeRateLimit: vi.fn(),
   mockHashPayload: vi.fn(),
   mockSignPayload: vi.fn(),
   mockSanitizeAuditValue: vi.fn((v) => v),
+  mockValidateAuditAction: vi.fn(() => true),
 }));
 
 vi.mock("./db.js", () => ({
@@ -31,9 +32,10 @@ vi.mock("./audit-security.js", () => ({
   hashAuditPayload: mockHashPayload,
   sanitizeAuditValue: mockSanitizeAuditValue,
   signAuditPayload: mockSignPayload,
+  validateAuditAction: mockValidateAuditAction,
 }));
 
-import { logLoginAttempt } from "./audit.js";
+import { logLoginAttempt, _resetAuditCircuitForTests } from "./audit.js";
 
 describe("logLoginAttempt", () => {
   beforeEach(() => {
@@ -43,6 +45,9 @@ describe("logLoginAttempt", () => {
     mockHashPayload.mockReset();
     mockSignPayload.mockReset();
     mockSanitizeAuditValue.mockReset();
+    mockValidateAuditAction.mockReset();
+    mockValidateAuditAction.mockReturnValue(true);
+    _resetAuditCircuitForTests();
   });
 
   it("inserts a login success row with correct parameters", async () => {
@@ -204,5 +209,42 @@ describe("logLoginAttempt", () => {
 
     expect(appendFileSyncSpy).toHaveBeenCalled();
     appendFileSyncSpy.mockRestore();
+  });
+
+  // ── Circuit breaker (issue #771) ──────────────────────────────────────────
+
+  it("routes to fallback after circuit breaker opens from repeated DB failures", async () => {
+    const permError = new Error("DB down");
+    mockQuery.mockRejectedValue(permError);
+    mockIsRetryablePoolError.mockReturnValue(false);
+    mockConsumeRateLimit.mockReturnValue({ allowed: true });
+    mockHashPayload.mockReturnValue("a".repeat(64));
+    mockSignPayload.mockReturnValue("b".repeat(64));
+
+    const appendFileSyncSpy = vi.spyOn(fs, "appendFileSync").mockImplementation(() => {});
+
+    // Exceed the default threshold (5) to open the circuit
+    for (let i = 0; i < 6; i += 1) {
+      await logLoginAttempt({ merchantId: `m-${i}`, ipAddress: "1.2.3.4", userAgent: "ua", status: "failure" });
+    }
+
+    // After circuit opens, subsequent calls bypass the DB entirely
+    const callCountBeforeCircuitOpen = mockQuery.mock.calls.length;
+    await logLoginAttempt({ merchantId: "m-circuit", ipAddress: "1.2.3.4", userAgent: "ua", status: "failure" });
+    expect(mockQuery.mock.calls.length).toBe(callCountBeforeCircuitOpen);
+    expect(appendFileSyncSpy).toHaveBeenCalled();
+
+    appendFileSyncSpy.mockRestore();
+  });
+
+  it("resets circuit after success", async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    mockIsRetryablePoolError.mockReturnValue(false);
+    mockConsumeRateLimit.mockReturnValue({ allowed: true });
+    mockHashPayload.mockReturnValue("a".repeat(64));
+    mockSignPayload.mockReturnValue("b".repeat(64));
+
+    await logLoginAttempt({ merchantId: "m-ok", ipAddress: "1.2.3.4", userAgent: "ua", status: "success" });
+    expect(mockQuery).toHaveBeenCalledOnce();
   });
 });
