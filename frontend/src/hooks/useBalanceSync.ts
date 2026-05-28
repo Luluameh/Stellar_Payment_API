@@ -1,5 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
-import { toast } from "sonner";
+import { useEffect, useReducer, useCallback, useRef } from "react";
 
 interface Balance {
   code: string;
@@ -14,6 +13,49 @@ interface UseBalanceSyncOptions {
   horizonUrl?: string;
 }
 
+interface BalanceSyncState {
+  balances: Balance[];
+  isLoading: boolean;
+  lastUpdated: Date | null;
+  error: string | null;
+}
+
+type BalanceSyncAction =
+  | { type: "FETCH_START" }
+  | { type: "FETCH_SUCCESS"; balances: Balance[]; at: Date }
+  | { type: "FETCH_ERROR"; error: string };
+
+const initialState: BalanceSyncState = {
+  balances: [],
+  isLoading: false,
+  lastUpdated: null,
+  error: null,
+};
+
+// Consolidating the related pieces of state into a reducer keeps the
+// fetch lifecycle (start → success → error) explicit and prevents the
+// inconsistent intermediate renders that separate setState calls can cause.
+function balanceSyncReducer(
+  state: BalanceSyncState,
+  action: BalanceSyncAction,
+): BalanceSyncState {
+  switch (action.type) {
+    case "FETCH_START":
+      return { ...state, isLoading: true, error: null };
+    case "FETCH_SUCCESS":
+      return {
+        balances: action.balances,
+        isLoading: false,
+        lastUpdated: action.at,
+        error: null,
+      };
+    case "FETCH_ERROR":
+      return { ...state, isLoading: false, error: action.error };
+    default:
+      return state;
+  }
+}
+
 /**
  * Hook for real-time balance synchronization with polling and race condition prevention.
  */
@@ -22,16 +64,15 @@ export function useBalanceSync(
   apiKey: string | null | undefined,
   options: UseBalanceSyncOptions = {}
 ) {
-  const { 
-    pollingInterval = 30000, 
-    onUpdate, 
+  const {
+    pollingInterval = 30000,
+    onUpdate,
     enabled = true,
     address = null,
     horizonUrl = "https://horizon-testnet.stellar.org"
   } = options;
-  const [balances, setBalances] = useState<Balance[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [state, dispatch] = useReducer(balanceSyncReducer, initialState);
+  const { balances, isLoading, lastUpdated, error } = state;
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchBalances = useCallback(async () => {
@@ -44,7 +85,7 @@ export function useBalanceSync(
     }
     abortControllerRef.current = new AbortController();
 
-    setIsLoading(true);
+    dispatch({ type: "FETCH_START" });
     try {
       let newBalances: Balance[] = [];
 
@@ -78,14 +119,13 @@ export function useBalanceSync(
         }));
       }
 
-      setBalances(newBalances);
-      setLastUpdated(new Date());
+      dispatch({ type: "FETCH_SUCCESS", balances: newBalances, at: new Date() });
       onUpdate?.(newBalances);
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") return;
+      const message = error instanceof Error ? error.message : "Balance sync failed";
       console.error("Balance sync error:", error);
-    } finally {
-      setIsLoading(false);
+      dispatch({ type: "FETCH_ERROR", error: message });
     }
   }, [merchantId, apiKey, enabled, onUpdate, address, horizonUrl]);
 
@@ -107,6 +147,7 @@ export function useBalanceSync(
     balances,
     isLoading,
     lastUpdated,
+    error,
     refresh: fetchBalances,
     isStale: lastUpdated ? Date.now() - lastUpdated.getTime() > pollingInterval * 2 : true,
   };

@@ -71,13 +71,20 @@ export function ThemeProvider({
       
       setError(null);
     } catch (err) {
-      // Revert optimistic update
+      // Revert optimistic update — restore the previous theme, the document
+      // class AND the meta theme-color so no part of the optimistic change
+      // lingers after a failed persist.
       setThemeState(previousTheme !== undefined ? previousTheme : defaultTheme);
       if (previousResolved) {
         setResolvedTheme(previousResolved);
         if (typeof globalThis !== "undefined" && globalThis.window) {
           globalThis.document.documentElement.classList.remove("light", "dark");
           globalThis.document.documentElement.classList.add(previousResolved);
+
+          const metaThemeColor = globalThis.document.querySelector('meta[name="theme-color"]');
+          if (metaThemeColor) {
+            metaThemeColor.setAttribute("content", previousResolved === "dark" ? "#0A0A0A" : "#FFFFFF");
+          }
         }
       }
       
