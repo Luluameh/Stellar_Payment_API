@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 
 const DEFAULT_SIGNATURE_WINDOW_SECONDS = 300;
+// Minimum HMAC secret length to prevent signing with trivially weak keys (#767)
+const MIN_SECRET_LENGTH = 16;
 
 function normalizeSignatureHeader(signatureHeader) {
   if (typeof signatureHeader !== "string") return null;
@@ -48,7 +50,7 @@ export function signApiGatewayRequest({
   timestamp,
   body,
 }) {
-  if (!secret || !timestamp) {
+  if (!secret || secret.length < MIN_SECRET_LENGTH || !timestamp) {
     return null;
   }
 
@@ -68,8 +70,8 @@ export function verifyApiGatewayRequestSignature({
     process.env.API_GATEWAY_SIGNATURE_TOLERANCE_SECONDS || DEFAULT_SIGNATURE_WINDOW_SECONDS,
   ),
 }) {
-  if (!secret) {
-    return { valid: false, reason: "Missing signature secret" };
+  if (!secret || secret.length < MIN_SECRET_LENGTH) {
+    return { valid: false, reason: "Missing or insufficient signature secret" };
   }
 
   const timestamp = Number.parseInt(String(timestampHeader || ""), 10);
