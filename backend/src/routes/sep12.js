@@ -17,6 +17,43 @@ import {
   KycError,
 } from "../lib/sep12-kyc.js";
 import { logger } from "../lib/logger.js";
+import rateLimit from "express-rate-limit";
+import { ipKeyGenerator } from "express-rate-limit";
+
+export const SEP12_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+export const SEP12_RATE_LIMIT_MAX = 50;
+
+export function buildSep12RateLimitKey(req) {
+  const rawAccount =
+    req.query?.account ?? req.body?.account ?? req.params?.account ?? "unknown";
+  const account = Array.isArray(rawAccount) ? rawAccount[0] : String(rawAccount);
+  const ip = ipKeyGenerator(req.ip || req.socket?.remoteAddress || "unknown-ip");
+  return `sep12:${account}:${ip}`;
+}
+
+export function createSep12RateLimit({
+  windowMs = SEP12_RATE_LIMIT_WINDOW_MS,
+  max = SEP12_RATE_LIMIT_MAX,
+  rateLimitFactory = rateLimit,
+} = {}) {
+  return rateLimitFactory({
+    windowMs,
+    max,
+    keyGenerator: buildSep12RateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { ip: false },
+    passOnStoreError: true,
+    handler: (_req, res) => {
+      res.status(429).json({
+        error: "TOO_MANY_REQUESTS",
+        message: "Too many KYC requests, please try again later",
+      });
+    },
+  });
+}
+
+const sep12RateLimit = createSep12RateLimit();
 
 function handleError(err, res) {
   if (err instanceof KycError) {
@@ -32,6 +69,9 @@ function handleError(err, res) {
 
 export default function createSep12Router() {
   const router = express.Router();
+
+  // Apply rate limiting to all SEP-12 routes (Issue #742 & #741: Security audit)
+  router.use(sep12RateLimit);
 
   router.get("/sep12/customer", async (req, res) => {
     try {

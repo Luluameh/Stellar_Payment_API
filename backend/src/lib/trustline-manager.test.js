@@ -213,6 +213,108 @@ describe('Trustline Manager - Task #595: Cryptographic Signature Verification', 
 
       expect(mockVerifyTransactionSignature).toHaveBeenCalledTimes(1);
     });
+
+    test('should bypass cache when skipCache is true', async () => {
+      const txHash = 'skip_cache_tx_hash';
+
+      mockVerifyTransactionSignature.mockResolvedValue({
+        valid: true,
+        reason: 'Signature verification passed',
+        isMultiSig: false,
+        signatureCount: 1,
+        thresholdMet: true
+      });
+
+      mockWithHorizonRetry.mockResolvedValue({
+        envelope_xdr: 'mock_xdr'
+      });
+
+      mockStellarTransaction.mockImplementation(() => ({
+        operations: [{
+          type: 'changeTrust',
+          asset: {
+            isNative: () => false,
+            getCode: () => 'USDC',
+            getIssuer: () => 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+          },
+          limit: '1000'
+        }]
+      }));
+
+      mockIsValidAssetCode.mockReturnValue(true);
+      mockIsValidStellarAccountId.mockReturnValue(true);
+
+      await verifier.verifyTrustlineSignature(txHash, { skipCache: true });
+      await verifier.verifyTrustlineSignature(txHash, { skipCache: true });
+
+      expect(mockVerifyTransactionSignature).toHaveBeenCalledTimes(2);
+    });
+
+    test('should reject native assets in changeTrust operations', async () => {
+      const txHash = 'native_asset_hash';
+
+      mockVerifyTransactionSignature.mockResolvedValue({
+        valid: true,
+        reason: 'Signature verification passed',
+        isMultiSig: false,
+        signatureCount: 1,
+        thresholdMet: true
+      });
+
+      mockWithHorizonRetry.mockResolvedValue({
+        envelope_xdr: 'mock_xdr'
+      });
+
+      mockStellarTransaction.mockImplementation(() => ({
+        operations: [{
+          type: 'changeTrust',
+          asset: {
+            isNative: () => true,
+          },
+          limit: '1000'
+        }]
+      }));
+
+      const result = await verifier.verifyTrustlineSignature(txHash);
+
+      expect(result.valid).toBe(false);
+      expect(result.reason).toContain('Native asset trustlines are not allowed');
+    });
+
+    test('should verify allowTrust operations', async () => {
+      const txHash = 'allow_trust_hash';
+
+      mockVerifyTransactionSignature.mockResolvedValue({
+        valid: true,
+        reason: 'Signature verification passed',
+        isMultiSig: false,
+        signatureCount: 1,
+        thresholdMet: true
+      });
+
+      mockWithHorizonRetry.mockResolvedValue({
+        envelope_xdr: 'mock_xdr',
+        source_account: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'
+      });
+
+      mockStellarTransaction.mockImplementation(() => ({
+        source: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+        operations: [{
+          type: 'allowTrust',
+          assetCode: 'USDC',
+          trustor: 'GC3C4N6LRO2QG5AOKJ6VBA7T6C6IRPZO7KE6UQWJH7Y2ZKAEW4ZJ7KVN'
+        }]
+      }));
+
+      mockIsValidAssetCode.mockReturnValue(true);
+      mockIsValidStellarAccountId.mockReturnValue(true);
+
+      const result = await verifier.verifyTrustlineSignature(txHash, 'allowTrust');
+
+      expect(result.valid).toBe(true);
+      expect(result.operationType).toBe('allowTrust');
+      expect(result.assetCode).toBe('USDC');
+    });
   });
 });
 
@@ -689,7 +791,22 @@ describe('Trustline Manager - Task #596: SQL Query Optimization', () => {
       expect(result).toBe(mockResult);
       expect(mockQueryWithRetry).toHaveBeenCalledWith(
         expect.stringContaining('GROUP BY p.asset, p.asset_issuer'),
-        [merchantId]
+        [merchantId, '24 hours']
+      );
+    });
+
+    test('should sanitize unsupported timeframes when getting payment statistics', async () => {
+      const merchantId = 'merchant_123';
+      queryWithRetry.mockResolvedValue({ rows: [] });
+
+      await TrustlineQueryOptimizer.getPaymentStatsByAsset(
+        merchantId,
+        "1 hour'; DROP TABLE payments; --",
+      );
+
+      expect(mockQueryWithRetry).toHaveBeenCalledWith(
+        expect.stringContaining('$2::interval'),
+        [merchantId, '24 hours']
       );
     });
 

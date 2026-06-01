@@ -10,12 +10,8 @@ import {
   type KycStep,
 } from "@/lib/kyc-flow";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
 const STEPS: KycStep[] = ["personal", "address", "documents", "review"];
 const TOTAL_STEPS = STEPS.length;
-
-// ─── Animation variants ───────────────────────────────────────────────────────
 
 const stepVariants: Variants = {
   enter: (dir: number) => ({
@@ -38,8 +34,6 @@ const fadeUp: Variants = {
   hidden: { opacity: 0, y: 16 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
-
-// ─── Field wrapper ────────────────────────────────────────────────────────────
 
 function Field({
   id,
@@ -76,8 +70,6 @@ function Field({
   );
 }
 
-// ─── Main component ───────────────────────────────────────────────────────────
-
 function KycSubmissionForm() {
   const t = useTranslations();
   const uid = useId();
@@ -87,8 +79,6 @@ function KycSubmissionForm() {
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
 
   const stepIndex = STEPS.indexOf(state.currentStep);
-
-  // ── Step-level validation ─────────────────────────────────────────────────
 
   const validateCurrentStep = useCallback((): boolean => {
     const errs: Record<string, string> = {};
@@ -101,8 +91,6 @@ function KycSubmissionForm() {
     setStepErrors(errs);
     return Object.keys(errs).length === 0;
   }, [state.currentStep, state.personal, t]);
-
-  // ── Navigation ────────────────────────────────────────────────────────────
 
   const goNext = useCallback(() => {
     if (!validateCurrentStep()) {
@@ -126,8 +114,6 @@ function KycSubmissionForm() {
       setStepErrors({});
     }
   }, [stepIndex]);
-
-  // ── Submission ────────────────────────────────────────────────────────────
 
   const handleSubmit = useCallback(async () => {
     dispatch({ type: "SUBMIT" });
@@ -160,8 +146,6 @@ function KycSubmissionForm() {
     }
   }, [state, t]);
 
-  // ── Success screen ────────────────────────────────────────────────────────
-
   if (state.submittedAt) {
     return (
       <div
@@ -191,7 +175,12 @@ function KycSubmissionForm() {
               stroke="currentColor"
               aria-hidden="true"
             >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M5 13l4 4L19 7"
+              />
             </svg>
           </motion.div>
 
@@ -199,7 +188,8 @@ function KycSubmissionForm() {
             {t("successTitle")}
           </h2>
           <p className="text-pluto-600">
-            {t("successDescription") || "Your KYC verification has been submitted and is under review."}
+            {t("successDescription") ||
+              "Your KYC verification has been submitted and is under review."}
           </p>
 
           <button
@@ -214,21 +204,17 @@ function KycSubmissionForm() {
     );
   }
 
-  // ── Multi-step form ───────────────────────────────────────────────────────
-
   return (
     <div
       className="w-full max-w-2xl mx-auto"
       role="region"
       aria-label={t("kycForm") || "KYC Submission Form"}
     >
-      {/* Screen reader live region */}
       <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </div>
 
       <div className="rounded-3xl border border-pluto-100 bg-white p-8 shadow-lg space-y-6">
-        {/* ── Progress indicator ── */}
         <div
           role="progressbar"
           aria-valuenow={stepIndex + 1}
@@ -238,7 +224,9 @@ function KycSubmissionForm() {
           className="space-y-2"
         >
           <div className="flex justify-between text-xs text-pluto-600">
-            <span>{stepIndex + 1} of {TOTAL_STEPS}</span>
+            <span>
+              {stepIndex + 1} of {TOTAL_STEPS}
+            </span>
           </div>
           <div className="flex gap-2" role="list" aria-label={t("steps") || "Steps"}>
             {STEPS.map((s, i) => (
@@ -254,7 +242,6 @@ function KycSubmissionForm() {
           </div>
         </div>
 
-        {/* ── Animated step content ── */}
         <AnimatePresence mode="wait" custom={direction}>
           <motion.div
             key={state.currentStep}
@@ -265,7 +252,6 @@ function KycSubmissionForm() {
             exit="exit"
             className="space-y-4"
           >
-            {/* Step 1: Personal Info */}
             {state.currentStep === "personal" && (
               <section aria-labelledby={`${uid}-personal-title`} className="space-y-4">
                 <h2 id={`${uid}-personal-title`} className="text-xl font-bold text-pluto-900">
@@ -288,7 +274,9 @@ function KycSubmissionForm() {
                       }
                       aria-required="true"
                       aria-invalid={!!stepErrors.firstName}
-                      aria-describedby={stepErrors.firstName ? `${uid}-firstName-error` : undefined}
+                      aria-describedby={
+                        stepErrors.firstName ? `${uid}-firstName-error` : undefined
+                      }
                       className="rounded-xl border border-pluto-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-pluto-400"
                     />
                   </Field>
@@ -308,7 +296,9 @@ function KycSubmissionForm() {
                       }
                       aria-required="true"
                       aria-invalid={!!stepErrors.lastName}
-                      aria-describedby={stepErrors.lastName ? `${uid}-lastName-error` : undefined}
+                      aria-describedby={
+                        stepErrors.lastName ? `${uid}-lastName-error` : undefined
+                      }
                       className="rounded-xl border border-pluto-200 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-pluto-400"
                     />
                   </Field>
@@ -341,7 +331,6 @@ function KycSubmissionForm() {
               </section>
             )}
 
-            {/* Step 2: Address */}
             {state.currentStep === "address" && (
               <section aria-labelledby={`${uid}-address-title`} className="space-y-4">
                 <h2 id={`${uid}-address-title`} className="text-xl font-bold text-pluto-900">
@@ -419,7 +408,6 @@ function KycSubmissionForm() {
               </section>
             )}
 
-            {/* Step 3: Documents */}
             {state.currentStep === "documents" && (
               <section aria-labelledby={`${uid}-docs-title`} className="space-y-4">
                 <h2 id={`${uid}-docs-title`} className="text-xl font-bold text-pluto-900">
@@ -446,7 +434,9 @@ function KycSubmissionForm() {
                   >
                     <option value="">{t("selectIdType") || "Select ID type"}</option>
                     <option value="passport">{t("passport") || "Passport"}</option>
-                    <option value="drivers_license">{t("driversLicense") || "Driver's License"}</option>
+                    <option value="drivers_license">
+                      {t("driversLicense") || "Driver's License"}
+                    </option>
                     <option value="national_id">{t("nationalId") || "National ID"}</option>
                   </select>
                 </Field>
@@ -511,7 +501,6 @@ function KycSubmissionForm() {
               </section>
             )}
 
-            {/* Step 4: Review */}
             {state.currentStep === "review" && (
               <section aria-labelledby={`${uid}-review-title`} className="space-y-4">
                 <h2 id={`${uid}-review-title`} className="text-xl font-bold text-pluto-900">
@@ -522,7 +511,10 @@ function KycSubmissionForm() {
                   {[
                     { label: t("firstName") || "First Name", value: state.personal.firstName },
                     { label: t("lastName") || "Last Name", value: state.personal.lastName },
-                    { label: t("dateOfBirth") || "Date of Birth", value: state.personal.dateOfBirth },
+                    {
+                      label: t("dateOfBirth") || "Date of Birth",
+                      value: state.personal.dateOfBirth,
+                    },
                     { label: t("city") || "City", value: state.address.city },
                     { label: t("country") || "Country", value: state.address.country },
                     { label: t("idType") || "ID Type", value: state.documents.idType },
@@ -550,7 +542,6 @@ function KycSubmissionForm() {
           </motion.div>
         </AnimatePresence>
 
-        {/* ── Navigation buttons ── */}
         <div className="flex gap-4 pt-2">
           <button
             type="button"
@@ -594,7 +585,6 @@ function KycSubmissionForm() {
           )}
         </div>
 
-        {/* Submit status for screen readers */}
         <div id={`${uid}-submit-status`} className="sr-only" aria-live="polite">
           {state.isSubmitting && (t("submitting") || "Submitting your KYC information...")}
         </div>

@@ -19,9 +19,10 @@ Scope: `src/lib/sep12-kyc.js`, `src/routes/sep12.js`, and the
 
 ## Residual risks / recommendations
 
-- **Rate limiting:** the SEP-12 routes should be placed behind the existing
-  API rate-limit middleware in production to blunt brute-force/enumeration of
-  account KYC status. (Mounting is left to the deployment configuration.)
+- **Rate limiting:** route-level throttling is enabled for all SEP-12 endpoints
+  at `50 requests / 15 minutes` per `account + IP` key to blunt brute-force and
+  enumeration attacks. Redis-backed enforcement can still be layered in front
+  of the route if stronger distributed limits are required.
 - **PII at rest:** `fields` is stored as `jsonb` in plaintext. For regulated
   deployments, consider column-level encryption or a dedicated KYC vault.
 - **Right to erasure:** `DELETE /sep12/customer/:account` supports hard

@@ -27,6 +27,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 export const TRUSTLINE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 export const TRUSTLINE_RATE_LIMIT_MAX = 20; // 20 operations per window
 export const TRUSTLINE_VERIFICATION_RATE_LIMIT_MAX = 50; // 50 verifications per window
+const TRUSTLINE_STATS_TIMEFRAMES = new Set(["1 hour", "24 hours", "7 days", "30 days"]);
 
 // Error recovery constants
 const MAX_RETRY_ATTEMPTS = 3;
@@ -70,17 +71,28 @@ export class TrustlineSignatureVerifier {
   /**
    * Verify trustline operation signature with enhanced security
    */
-  async verifyTrustlineSignature(txHash, expectedOperation = 'changeTrust') {
+  async verifyTrustlineSignature(txHash, options = {}) {
     try {
       if (!txHash || typeof txHash !== "string") {
         throw new Error("Invalid transaction hash provided for trustline verification");
       }
 
+      const normalizedOptions =
+        typeof options === "string"
+          ? { expectedOperation: options }
+          : options || {};
+      const {
+        expectedOperation = "changeTrust",
+        skipCache = false,
+      } = normalizedOptions;
+
       // Check cache first
       const cacheKey = `${txHash}:${expectedOperation}`;
-      const cached = this.verificationCache.get(cacheKey);
-      if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
-        return cached.result;
+      if (!skipCache) {
+        const cached = this.verificationCache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+          return cached.result;
+        }
       }
 
       // Step 1: Basic signature verification
@@ -112,10 +124,12 @@ export class TrustlineSignatureVerifier {
       };
 
       // Cache the result
-      this.verificationCache.set(cacheKey, {
-        result,
-        timestamp: Date.now()
-      });
+      if (!skipCache) {
+        this.verificationCache.set(cacheKey, {
+          result,
+          timestamp: Date.now()
+        });
+      }
 
       return result;
     } catch (error) {
@@ -181,25 +195,54 @@ export class TrustlineSignatureVerifier {
       
       if (op.type === 'changeTrust') {
         const asset = op.asset;
-        assetCode = asset.isNative() ? 'XLM' : asset.getCode();
-        assetIssuer = asset.isNative() ? null : asset.getIssuer();
+        if (asset.isNative()) {
+          return {
+            valid: false,
+            reason: "Native asset trustlines are not allowed"
+          };
+        }
+
+        assetCode = asset.getCode();
+        assetIssuer = asset.getIssuer();
         limit = op.limit;
 
         // Validate asset code and issuer
-        if (!asset.isNative()) {
-          if (!isValidAssetCode(assetCode)) {
-            return {
-              valid: false,
-              reason: `Invalid asset code in trustline operation: ${assetCode}`
-            };
-          }
-          
-          if (!isValidStellarAccountId(assetIssuer)) {
-            return {
-              valid: false,
-              reason: `Invalid asset issuer in trustline operation: ${assetIssuer}`
-            };
-          }
+        if (!isValidAssetCode(assetCode)) {
+          return {
+            valid: false,
+            reason: `Invalid asset code in trustline operation: ${assetCode}`
+          };
+        }
+        
+        if (!isValidStellarAccountId(assetIssuer)) {
+          return {
+            valid: false,
+            reason: `Invalid asset issuer in trustline operation: ${assetIssuer}`
+          };
+        }
+      } else if (op.type === 'allowTrust') {
+        assetCode = op.assetCode;
+        assetIssuer = op.source || transaction.source || tx.source_account || null;
+
+        if (!isValidAssetCode(assetCode)) {
+          return {
+            valid: false,
+            reason: `Invalid asset code in trustline operation: ${assetCode}`
+          };
+        }
+
+        if (assetIssuer && !isValidStellarAccountId(assetIssuer)) {
+          return {
+            valid: false,
+            reason: `Invalid asset issuer in trustline operation: ${assetIssuer}`
+          };
+        }
+
+        if (!isValidStellarAccountId(op.trustor)) {
+          return {
+            valid: false,
+            reason: `Invalid trustor in trustline operation: ${op.trustor}`
+          };
         }
       }
 
@@ -792,6 +835,7 @@ export class TrustlineQueryOptimizer {
    * Get payment statistics by asset with optimized aggregation
    */
   static async getPaymentStatsByAsset(merchantId, timeframe = '24 hours') {
+    const safeTimeframe = TRUSTLINE_STATS_TIMEFRAMES.has(timeframe) ? timeframe : "24 hours";
     const query = `
       SELECT 
         p.asset,
@@ -807,13 +851,13 @@ export class TrustlineQueryOptimizer {
       FROM payments p
       WHERE p.merchant_id = $1
         AND p.deleted_at IS NULL
-        AND p.created_at >= NOW() - INTERVAL '${timeframe}'
+        AND p.created_at >= NOW() - $2::interval
       GROUP BY p.asset, p.asset_issuer
       ORDER BY total_volume DESC, payment_count DESC
     `;
     
     return TrustlineErrorRecovery.executeWithRecovery(
-      () => queryWithRetry(query, [merchantId]),
+      () => queryWithRetry(query, [merchantId, safeTimeframe]),
       `get payment stats by asset for merchant ${merchantId}`
     );
   }
@@ -1056,11 +1100,15 @@ export class TrustlineManager {
    */
   async verifyTrustlineTransaction(txHash, options = {}) {
     const {
-      expectedOperation = 'changeTrust'
+      expectedOperation = 'changeTrust',
+      skipCache = false,
     } = options;
 
     return this.errorRecovery.executeWithRecovery(
-      () => this.signatureVerifier.verifyTrustlineSignature(txHash, expectedOperation),
+      () => this.signatureVerifier.verifyTrustlineSignature(txHash, {
+        expectedOperation,
+        skipCache,
+      }),
       `verify trustline transaction ${txHash}`
     );
   }

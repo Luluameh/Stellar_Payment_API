@@ -11,11 +11,12 @@
 import express from 'express';
 import { body, param, query, validationResult } from 'express-validator';
 import { trustlineManager, createTrustlineRateLimits } from '../lib/trustline-manager.js';
-import { authenticateApiKey } from '../middleware/auth.js';
+import { requireApiKeyAuth } from '../lib/auth.js';
 import { connectRedisClient } from '../lib/redis.js';
 import { isValidStellarAccountId, isValidAssetCode } from '../lib/stellar.js';
 
 const router = express.Router();
+const authenticateApiKey = requireApiKeyAuth();
 
 // Initialize rate limiting
 let rateLimiters = null;
