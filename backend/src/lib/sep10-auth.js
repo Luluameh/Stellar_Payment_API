@@ -4,36 +4,67 @@ import { randomBytes } from "node:crypto";
 
 const DEFAULT_HOME_DOMAIN = "localhost";
 
-
 const NETWORK = (process.env.STELLAR_NETWORK || "testnet").toLowerCase();
 const NETWORK_PASSPHRASE =
   NETWORK === "public"
     ? StellarSdk.Networks.PUBLIC
     : StellarSdk.Networks.TESTNET;
 
-const CHALLENGE_EXPIRES_IN = 300; // 5 minutes
-const JWT_SECRET = process.env.JWT_SECRET || "pluto-secret-key";
+const CHALLENGE_EXPIRES_IN = 300;
+const NONCE_CLEANUP_INTERVAL = 600_000;
+const MAX_NONCE_CACHE = 10_000;
 
-/**
- * Dynamically retrieve the server signing key from environment
- * This prevents module-level caching issues in tests
- * @returns {string|undefined} The server signing key
- */
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error("JWT_SECRET environment variable is required for SEP-10 authentication");
+  }
+  return secret;
+}
+
+const _usedNonces = new Set();
+let _nonceCleanupTimer = null;
+
+function startNonceCleanup() {
+  if (_nonceCleanupTimer) return;
+  _nonceCleanupTimer = setInterval(() => {
+    if (_usedNonces.size > MAX_NONCE_CACHE) {
+      _usedNonces.clear();
+    }
+  }, NONCE_CLEANUP_INTERVAL);
+  if (_nonceCleanupTimer.unref) _nonceCleanupTimer.unref();
+}
+
+function isNonceReused(nonce) {
+  if (_usedNonces.has(nonce)) return true;
+  _usedNonces.add(nonce);
+  if (_usedNonces.size === 1) startNonceCleanup();
+  return false;
+}
+
+export function _resetNonceCacheForTests() {
+  _usedNonces.clear();
+  if (_nonceCleanupTimer) {
+    clearInterval(_nonceCleanupTimer);
+    _nonceCleanupTimer = null;
+  }
+}
+
 function getServerSigningKey() {
   return process.env.SEP10_SERVER_SIGNING_KEY;
 }
 
-/**
- * Generate a SEP-0010 challenge transaction for a client account
- * @param {string} clientAccountId - Stellar public key of the client
- * @param {string} [homeDomain] - Optional home domain
- * @returns {string} Base64-encoded challenge transaction XDR
- */
 export function generateChallenge(clientAccountId, homeDomain = DEFAULT_HOME_DOMAIN) {
   const serverSigningKey = getServerSigningKey();
 
   if (!serverSigningKey) {
     throw new Error("SEP-0010 server signing key not configured");
+  }
+
+  try {
+    StellarSdk.Keypair.fromPublicKey(clientAccountId);
+  } catch {
+    throw new Error("Invalid client Stellar account");
   }
 
   const serverKeypair = StellarSdk.Keypair.fromSecret(serverSigningKey);
@@ -81,13 +112,18 @@ export function verifyChallenge(challengeXdr, clientAccountId, homeDomain = DEFA
   }
 
   try {
+    StellarSdk.Keypair.fromPublicKey(clientAccountId);
+  } catch {
+    return { valid: false, error: "Invalid client account" };
+  }
+
+  try {
     const serverKeypair = StellarSdk.Keypair.fromSecret(serverSigningKey);
     const transaction = new StellarSdk.TransactionBuilder.fromXDR(
       challengeXdr,
       NETWORK_PASSPHRASE,
     );
 
-    // Verify transaction structure
     if (transaction.operations.length !== 1) {
       return { valid: false, error: "Invalid challenge structure" };
     }
@@ -101,23 +137,20 @@ export function verifyChallenge(challengeXdr, clientAccountId, homeDomain = DEFA
       return { valid: false, error: "Client account mismatch" };
     }
 
-    // Ensure the challenge is bound to SEP-0010 auth and includes a nonce value
-    // Expected manageData name format: `${homeDomain} auth`
-    if (typeof operation.name !== "string" || !operation.name.endsWith(" auth")) {
-      return { valid: false, error: "Invalid challenge data name" };
-    }
-
     const expectedName = `${homeDomain} auth`;
     if (operation.name !== expectedName) {
       return { valid: false, error: "Challenge data name mismatch" };
     }
 
-    if (typeof operation.value !== "string" || operation.value.length < 16) {
+    const valueStr = typeof operation.value === "string" ? operation.value : operation.value?.toString();
+    if (typeof valueStr !== "string" || valueStr.length < 16) {
       return { valid: false, error: "Invalid challenge nonce" };
     }
 
+    if (isNonceReused(valueStr)) {
+      return { valid: false, error: "Challenge nonce already used" };
+    }
 
-    // Verify timebounds
     const now = Math.floor(Date.now() / 1000);
     const { minTime, maxTime } = transaction.timeBounds;
 
@@ -125,7 +158,6 @@ export function verifyChallenge(challengeXdr, clientAccountId, homeDomain = DEFA
       return { valid: false, error: "Challenge expired" };
     }
 
-    // Verify signatures (bind to expected signer keys)
     const txHash = transaction.hash();
 
     const serverKeypairForVerify = StellarSdk.Keypair.fromSecret(
@@ -156,10 +188,9 @@ export function verifyChallenge(challengeXdr, clientAccountId, homeDomain = DEFA
       return { valid: false, error: "Client signature missing or invalid" };
     }
 
-
     return { valid: true };
   } catch (err) {
-    return { valid: false, error: err.message };
+    return { valid: false, error: "Authentication failed" };
   }
 }
 
@@ -174,9 +205,9 @@ export function generateSessionToken(merchantId, email) {
     {
       id: merchantId,
       email: email,
-      merchant_id: merchantId, // Keep for legacy middleware support
+      merchant_id: merchantId,
     },
-    JWT_SECRET,
+    getJwtSecret(),
     { expiresIn: "24h" },
   );
 }
@@ -188,10 +219,10 @@ export function generateSessionToken(merchantId, email) {
  */
 export function verifySessionToken(token) {
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, getJwtSecret());
     return { valid: true, payload };
   } catch (err) {
-    return { valid: false, error: err.message || "Invalid token" };
+    return { valid: false, error: "Invalid or expired session token" };
   }
 }
 

@@ -133,13 +133,22 @@ export function verifyCustomerSignature(
  * exhausted we surface a retryable 503 so the client can back off, and map
  * everything else to a non-leaky 500. Field values are never logged (#593).
  */
+const SLOW_QUERY_THRESHOLD_MS = 500;
+
 async function withRecovery(fn, label) {
+  const start = Date.now();
   try {
-    return await fn();
+    const result = await fn();
+    const elapsed = Date.now() - start;
+    if (elapsed > SLOW_QUERY_THRESHOLD_MS) {
+      logger.warn({ label, elapsed }, "sep12 kyc slow query");
+    }
+    return result;
   } catch (err) {
+    const elapsed = Date.now() - start;
     if (err instanceof KycError) throw err;
     if (isRetryablePoolError(err)) {
-      logger.warn({ label, code: err.code }, "sep12 kyc store temporarily unavailable");
+      logger.warn({ label, code: err.code, elapsed }, "sep12 kyc store temporarily unavailable");
       throw new KycError(
         "SERVICE_UNAVAILABLE",
         "KYC store temporarily unavailable, please retry",
@@ -147,7 +156,7 @@ async function withRecovery(fn, label) {
         { retryable: true, cause: err },
       );
     }
-    logger.error({ label, code: err.code }, "sep12 kyc store error");
+    logger.error({ label, code: err.code, elapsed }, "sep12 kyc store error");
     throw new KycError("DB_ERROR", "KYC store error", 500, { cause: err });
   }
 }
@@ -264,10 +273,29 @@ export async function getCustomer({ account, memo = "" }, deps = {}) {
 
 /**
  * Delete a customer's KYC record (SEP-12 `DELETE /customer`).
+ * Requires a valid signature from the account holder (#739).
  */
-export async function deleteCustomer({ account, memo = "" }, deps = {}) {
+export async function deleteCustomer(
+  { account, memo = "", timestamp, signature },
+  deps = {},
+) {
   const query = deps.query || queryWithRetry;
+  const verifySignature = deps.verifySignature || verifyCustomerSignature;
+  const now = deps.now;
+
   assertValidAccount(account);
+
+  const signatureResult = verifySignature(
+    { account, memo, timestamp, signature, fields: {} },
+    now ? { now } : undefined,
+  );
+  if (!signatureResult.valid) {
+    throw new KycError(
+      "SIGNATURE_INVALID",
+      `Signature verification failed: ${signatureResult.reason}`,
+      401,
+    );
+  }
 
   const sql = `
     DELETE FROM sep12_kyc_customers

@@ -20,8 +20,18 @@ import { logger } from "../lib/logger.js";
 import rateLimit from "express-rate-limit";
 import { ipKeyGenerator } from "express-rate-limit";
 
-export const SEP12_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
-export const SEP12_RATE_LIMIT_MAX = 50;
+export const SEP12_RATE_LIMIT_WINDOW_MS = Number(
+  process.env.SEP12_RATE_LIMIT_WINDOW_MS || (15 * 60 * 1000),
+);
+export const SEP12_RATE_LIMIT_MAX = Number(
+  process.env.SEP12_RATE_LIMIT_MAX || 50,
+);
+export const SEP12_RATE_LIMIT_WRITE_WINDOW_MS = Number(
+  process.env.SEP12_RATE_LIMIT_WRITE_WINDOW_MS || (60 * 60 * 1000),
+);
+export const SEP12_RATE_LIMIT_WRITE_MAX = Number(
+  process.env.SEP12_RATE_LIMIT_WRITE_MAX || 10,
+);
 
 export function buildSep12RateLimitKey(req) {
   const rawAccount =
@@ -35,6 +45,7 @@ export function createSep12RateLimit({
   windowMs = SEP12_RATE_LIMIT_WINDOW_MS,
   max = SEP12_RATE_LIMIT_MAX,
   rateLimitFactory = rateLimit,
+  store,
 } = {}) {
   return rateLimitFactory({
     windowMs,
@@ -44,6 +55,7 @@ export function createSep12RateLimit({
     legacyHeaders: false,
     validate: { ip: false },
     passOnStoreError: true,
+    store,
     handler: (_req, res) => {
       res.status(429).json({
         error: "TOO_MANY_REQUESTS",
@@ -53,7 +65,29 @@ export function createSep12RateLimit({
   });
 }
 
-const sep12RateLimit = createSep12RateLimit();
+export function createSep12WriteRateLimit({
+  windowMs = SEP12_RATE_LIMIT_WRITE_WINDOW_MS,
+  max = SEP12_RATE_LIMIT_WRITE_MAX,
+  rateLimitFactory = rateLimit,
+  store,
+} = {}) {
+  return rateLimitFactory({
+    windowMs,
+    max,
+    keyGenerator: buildSep12RateLimitKey,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: { ip: false },
+    passOnStoreError: true,
+    store,
+    handler: (_req, res) => {
+      res.status(429).json({
+        error: "TOO_MANY_REQUESTS",
+        message: "Too many KYC write requests, please try again later",
+      });
+    },
+  });
+}
 
 function handleError(err, res) {
   if (err instanceof KycError) {
@@ -62,18 +96,19 @@ function handleError(err, res) {
     res.status(err.httpStatus).json(body);
     return;
   }
-  // Never leak internals; field values are not logged (#593).
   logger.error({ err: err.message }, "sep12 unexpected error");
   res.status(500).json({ error: "INTERNAL_ERROR", message: "Unexpected error" });
 }
 
-export default function createSep12Router() {
+export default function createSep12Router({ redisClient, redisStore } = {}) {
   const router = express.Router();
 
-  // Apply rate limiting to all SEP-12 routes (Issue #742 & #741: Security audit)
-  router.use(sep12RateLimit);
+  const store = redisStore;
 
-  router.get("/sep12/customer", async (req, res) => {
+  const readLimiter = createSep12RateLimit({ store });
+  const writeLimiter = createSep12WriteRateLimit({ store });
+
+  router.get("/sep12/customer", readLimiter, async (req, res) => {
     try {
       const data = await getCustomer({
         account: req.query.account,
@@ -91,7 +126,7 @@ export default function createSep12Router() {
     }
   });
 
-  router.put("/sep12/customer", async (req, res) => {
+  router.put("/sep12/customer", writeLimiter, async (req, res) => {
     try {
       const { account, memo, timestamp, signature, fields } = req.body ?? {};
       const result = await putCustomer({
@@ -107,11 +142,13 @@ export default function createSep12Router() {
     }
   });
 
-  router.delete("/sep12/customer/:account", async (req, res) => {
+  router.delete("/sep12/customer/:account", writeLimiter, async (req, res) => {
     try {
       const result = await deleteCustomer({
         account: req.params.account,
         memo: req.query.memo ?? "",
+        timestamp: req.query.timestamp,
+        signature: req.query.signature,
       });
       res.json(result);
     } catch (err) {

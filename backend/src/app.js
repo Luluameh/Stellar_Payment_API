@@ -296,7 +296,9 @@ export async function createApp({ redisClient }) {
   app.use("/", sep0001Router);
 
   // SEP-12 KYC endpoints (signature-gated; auth enforced per-request)
-  app.use("/", createSep12Router());
+  app.use("/", createSep12Router({
+    redisStore: redisAvailable ? createRedisRateLimitStore({ client: redisClient, prefix: "rl:sep12:" }) : undefined,
+  }));
   app.use("/api/trustlines", trustlinesRouter);
 
   // Prometheus Metrics endpoint

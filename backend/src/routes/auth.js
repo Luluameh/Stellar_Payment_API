@@ -4,6 +4,7 @@
  */
 
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { supabase } from "../lib/supabase.js";
 import {
   generateChallenge,
@@ -16,6 +17,26 @@ import { validateRequest } from "../lib/validation.js";
 import { authChallengeSchema, authVerifySchema } from "../lib/request-schemas.js";
 
 const router = express.Router();
+
+const sep10ChallengeRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: "Too many challenge requests, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { ip: false },
+  passOnStoreError: true,
+});
+
+const sep10VerifyRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: "Too many verification attempts, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { ip: false },
+  passOnStoreError: true,
+});
 
 /**
  * @swagger
@@ -124,7 +145,7 @@ router.post("/auth/login", async (req, res, next) => {
  *       400:
  *         description: Invalid request
  */
-router.post("/auth/challenge", validateRequest({ body: authChallengeSchema }), async (req, res, next) => {
+router.post("/auth/challenge", sep10ChallengeRateLimit, validateRequest({ body: authChallengeSchema }), async (req, res, next) => {
   try {
     const { account } = req.body;
 
@@ -176,7 +197,7 @@ router.post("/auth/challenge", validateRequest({ body: authChallengeSchema }), a
  *       401:
  *         description: Authentication failed
  */
-router.post("/auth/verify", validateRequest({ body: authVerifySchema }), async (req, res, next) => {
+router.post("/auth/verify", sep10VerifyRateLimit, validateRequest({ body: authVerifySchema }), async (req, res, next) => {
   const ipAddress = req.ip ?? null;
   const userAgent = req.get("user-agent") ?? null;
 

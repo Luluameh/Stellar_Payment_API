@@ -212,15 +212,41 @@ describe("getCustomer", () => {
 });
 
 describe("deleteCustomer", () => {
-  it("returns deleted on a hit and 404 otherwise", async () => {
+  it("returns deleted on a hit with valid signature", async () => {
+    const kp = StellarSdk.Keypair.random();
+    const account = kp.publicKey();
+    const timestamp = nowSeconds();
+    const signature = signRequest(kp, { account, timestamp, fields: {} });
+
+    queryWithRetry.mockResolvedValue({ rows: [{ id: "rec-1" }] });
+    await expect(deleteCustomer({ account, timestamp, signature })).resolves.toEqual({
+      id: "rec-1",
+      deleted: true,
+    });
+  });
+
+  it("rejects delete without valid signature", async () => {
     const kp = StellarSdk.Keypair.random();
     const account = kp.publicKey();
 
-    queryWithRetry.mockResolvedValue({ rows: [{ id: "rec-1" }] });
-    await expect(deleteCustomer({ account })).resolves.toEqual({ id: "rec-1", deleted: true });
+    await expect(deleteCustomer({ account, timestamp: nowSeconds(), signature: "" })).rejects.toMatchObject({
+      code: "SIGNATURE_INVALID",
+      httpStatus: 401,
+    });
+    expect(queryWithRetry).not.toHaveBeenCalled();
+  });
+
+  it("throws 404 when absent", async () => {
+    const kp = StellarSdk.Keypair.random();
+    const account = kp.publicKey();
+    const timestamp = nowSeconds();
+    const signature = signRequest(kp, { account, timestamp, fields: {} });
 
     queryWithRetry.mockResolvedValue({ rows: [] });
-    await expect(deleteCustomer({ account })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(deleteCustomer({ account, timestamp, signature })).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      httpStatus: 404,
+    });
   });
 });
 
