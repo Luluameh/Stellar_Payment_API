@@ -172,12 +172,20 @@ export const OnboardingProgressTracker: React.FC<OnboardingProgressTrackerProps>
     [steps]
   );
 
+  /** Number of completed steps for visible and assistive summaries */
+  const completedStepsCount = useMemo(
+    () => sortedSteps.filter((s) => s.completed).length,
+    [sortedSteps],
+  );
+
   /** Progress percentage based on completed steps */
   const progressPercentage = useMemo(() => {
     if (sortedSteps.length === 0) return 0;
-    const completedCount = sortedSteps.filter((s) => s.completed).length;
-    return Math.round((completedCount / sortedSteps.length) * 100);
-  }, [sortedSteps]);
+    return Math.round((completedStepsCount / sortedSteps.length) * 100);
+  }, [completedStepsCount, sortedSteps.length]);
+
+  /** Stable screen-reader summary for the tracker and progress bar */
+  const progressSummary = `${completedStepsCount} of ${sortedSteps.length} steps completed. ${progressPercentage}% complete.`;
 
   /** True when all required steps are completed */
   const isOnboardingComplete = useMemo(() => {
