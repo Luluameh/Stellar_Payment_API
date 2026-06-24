@@ -64,6 +64,21 @@ vi.mock("./CopyButton", () => ({
     React.createElement("button", { type: "button" }, `copy ${text}`),
 }));
 
+vi.mock("./CheckoutQrModal", () => ({
+  default: ({
+    isOpen,
+    qrValue,
+  }: {
+    isOpen: boolean;
+    qrValue: string;
+    paymentId: string;
+    onClose: () => void;
+  }) =>
+    isOpen
+      ? React.createElement("div", { role: "dialog" }, `qr ${qrValue}`)
+      : null,
+}));
+
 vi.mock("./IntegrationCodeSnippets", () => ({
   default: () => React.createElement("div", null, "integration-code"),
 }));
@@ -85,6 +100,11 @@ describe("CreatePaymentForm", () => {
     vi.clearAllMocks();
     localStorage.clear();
     global.fetch = vi.fn();
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
+    });
   });
 
   it("shows the success animation state after submit and clears the draft on reset", async () => {
@@ -115,6 +135,14 @@ describe("CreatePaymentForm", () => {
     expect(screen.getByText("https://example.com/pay/pay_123")).toBeInTheDocument();
     expect(mockToastSuccess).toHaveBeenCalledWith("createdToast");
     expect(mockConfetti).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "shareLink" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toHaveTextContent("qr https://example.com/pay/pay_123");
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://example.com/pay/pay_123");
 
     fireEvent.click(screen.getByRole("button", { name: "createAnother" }));
 

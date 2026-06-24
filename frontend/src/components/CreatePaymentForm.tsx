@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import IntegrationCodeSnippets from "./IntegrationCodeSnippets";
 import Link from "next/link";
 import { InfoTooltip } from "./InfoTooltip";
+import CheckoutQrModal from "./CheckoutQrModal";
 import {
   useHydrateMerchantStore,
   useMerchantApiKey,
@@ -173,124 +174,121 @@ interface SuccessCardProps {
 }
 
 function SuccessCard({ created, onReset, t }: SuccessCardProps) {
-  const [canShare, setCanShare] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
 
-  // Fire confetti once on mount
   useEffect(() => {
     fireConfetti();
-    setCanShare(
-      typeof navigator !== "undefined" && typeof navigator.share === "function",
-    );
   }, []);
 
-  const handleShare = async () => {
-    if (!canShare) return;
-
+  const handleCopyAndOpenQr = async () => {
     try {
-      await navigator.share({
-        title: t("shareTitle"),
-        text: t("shareText"),
-        url: created.payment_link,
-      });
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        return;
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(created.payment_link);
+      } else {
+        throw new Error("Clipboard unavailable");
       }
-
-      toast.error(t("shareFailed"));
+    } catch {
+      const el = document.createElement("textarea");
+      el.value = created.payment_link;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
     }
+
+    setShowQrModal(true);
   };
 
   return (
-    <motion.div
-      key="success"
-      variants={successVariants}
-      initial="hidden"
-      animate="visible"
-      exit="exit"
-      className="flex flex-col gap-6"
-    >
-      {/* Main card */}
+    <>
       <motion.div
-        variants={childVariants}
-        className="relative overflow-hidden rounded-2xl border border-accent/25 bg-accent/5 p-6 backdrop-blur"
+        key="success"
+        variants={successVariants}
+        initial="hidden"
+        animate="visible"
+        exit="exit"
+        className="flex flex-col gap-6"
       >
-        {/* Subtle radial glow in the corner */}
-        <div
-          aria-hidden
-          className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent/10 blur-3xl"
-        />
-
-        {/* Check + heading */}
-        <div className="flex flex-col items-center text-center">
-          <AnimatedCheck />
-          <motion.p
-            variants={childVariants}
-            className="font-mono text-xs uppercase tracking-[0.2em] text-accent"
-          >
-            {t("readyEyebrow")}
-          </motion.p>
-          <motion.h2
-            variants={childVariants}
-            className="mt-1 text-xl font-semibold text-white"
-          >
-            {t("readyTitle")}
-          </motion.h2>
-          <motion.p
-            variants={childVariants}
-            className="mt-1 text-sm text-slate-400"
-          >
-            {t("readyDescription")}
-          </motion.p>
-        </div>
-
-        {/* Payment link row */}
+        {/* Main card */}
         <motion.div
           variants={childVariants}
-          className="mt-6 flex flex-col gap-2"
+          className="relative overflow-hidden rounded-2xl border border-accent/25 bg-accent/5 p-6 backdrop-blur"
         >
-          <label className="text-xs font-medium text-slate-300">
-            {t("paymentLink")}
-          </label>
-          <div className="flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 p-1 pl-4 transition-colors hover:border-accent/25">
-            <code className="flex-1 truncate font-mono text-sm text-accent">
-              {created.payment_link}
-            </code>
-            <CopyButton text={created.payment_link} />
-          </div>
-        </motion.div>
+          {/* Subtle radial glow in the corner */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-accent/10 blur-3xl"
+          />
 
-        {/* Meta grid */}
-        <motion.div
-          variants={childVariants}
-          className="mt-4 grid grid-cols-2 gap-3"
-        >
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <p className="mb-1 text-xs uppercase tracking-wider text-slate-500">
-              {t("paymentId")}
-            </p>
-            <p className="truncate font-mono text-xs text-slate-300">
-              {created.payment_id}
-            </p>
+          {/* Check + heading */}
+          <div className="flex flex-col items-center text-center">
+            <AnimatedCheck />
+            <motion.p
+              variants={childVariants}
+              className="font-mono text-xs uppercase tracking-[0.2em] text-accent"
+            >
+              {t("readyEyebrow")}
+            </motion.p>
+            <motion.h2
+              variants={childVariants}
+              className="mt-1 text-xl font-semibold text-white"
+            >
+              {t("readyTitle")}
+            </motion.h2>
+            <motion.p
+              variants={childVariants}
+              className="mt-1 text-sm text-slate-400"
+            >
+              {t("readyDescription")}
+            </motion.p>
           </div>
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <p className="mb-1 text-xs uppercase tracking-wider text-slate-500">
-              {t("status")}
-            </p>
-            <p className="font-mono text-xs capitalize text-slate-300">
-              {created.status}
-            </p>
-          </div>
-        </motion.div>
 
-        <motion.div
-          variants={childVariants}
-          className="mt-4 flex flex-wrap gap-2"
-        >
-          {canShare && (
+          {/* Payment link row */}
+          <motion.div
+            variants={childVariants}
+            className="mt-6 flex flex-col gap-2"
+          >
+            <label className="text-xs font-medium text-slate-300">
+              {t("paymentLink")}
+            </label>
+            <div className="flex items-center gap-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 p-1 pl-4 transition-colors hover:border-accent/25">
+              <code className="flex-1 truncate font-mono text-sm text-accent">
+                {created.payment_link}
+              </code>
+              <CopyButton text={created.payment_link} />
+            </div>
+          </motion.div>
+
+          {/* Meta grid */}
+          <motion.div
+            variants={childVariants}
+            className="mt-4 grid grid-cols-2 gap-3"
+          >
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+              <p className="mb-1 text-xs uppercase tracking-wider text-slate-500">
+                {t("paymentId")}
+              </p>
+              <p className="truncate font-mono text-xs text-slate-300">
+                {created.payment_id}
+              </p>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+              <p className="mb-1 text-xs uppercase tracking-wider text-slate-500">
+                {t("status")}
+              </p>
+              <p className="font-mono text-xs capitalize text-slate-300">
+                {created.status}
+              </p>
+            </div>
+          </motion.div>
+
+          <motion.div
+            variants={childVariants}
+            className="mt-4 flex flex-wrap gap-2"
+          >
             <button
               type="button"
-              onClick={() => void handleShare()}
+              onClick={() => void handleCopyAndOpenQr()}
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-accent/30 bg-accent/10 px-4 py-2 text-sm font-semibold text-accent transition-colors hover:bg-accent/15"
             >
               <svg
@@ -301,37 +299,44 @@ function SuccessCard({ created, onReset, t }: SuccessCardProps) {
                 strokeWidth={1.8}
               >
                 <path
-                  d="M7 12v7a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-7"
+                  d="M12 3v12m0 0 4-4m-4 4-4-4"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
                 <path
-                  d="M12 16V4"
+                  d="M5 21h14a2 2 0 0 0 2-2v-3"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
                 <path
-                  d="m8.5 7.5 3.5-3.5 3.5 3.5"
+                  d="M5 21a2 2 0 0 1-2-2v-3"
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
               </svg>
               {t("shareLink")}
             </button>
-          )}
+          </div>
         </motion.div>
+
+        {/* Reset link */}
+        <motion.button
+          variants={childVariants}
+          type="button"
+          onClick={onReset}
+          className="text-center text-sm font-medium text-slate-400 underline underline-offset-4 transition-colors hover:text-white"
+        >
+          {t("createAnother")}
+        </motion.button>
       </motion.div>
 
-      {/* Reset link */}
-      <motion.button
-        variants={childVariants}
-        type="button"
-        onClick={onReset}
-        className="text-center text-sm font-medium text-slate-400 underline underline-offset-4 transition-colors hover:text-white"
-      >
-        {t("createAnother")}
-      </motion.button>
-    </motion.div>
+      <CheckoutQrModal
+        isOpen={showQrModal}
+        onClose={() => setShowQrModal(false)}
+        qrValue={created.payment_link}
+        paymentId={created.payment_id}
+      />
+    </>
   );
 }
 
