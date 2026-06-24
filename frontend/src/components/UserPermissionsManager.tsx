@@ -1,401 +1,268 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
+import { useTranslations } from "next-intl";
+import { usePermissionsStore, type Permission } from "@/hooks/usePermissionsStore";
 
-export type TeamRole = "Owner" | "Administrator" | "Developer" | "Support" | "Viewer";
-
-export interface TeamMember {
-  id: string;
-  email: string;
-  role: TeamRole;
-  status: "Active" | "Invited";
-  joinedAt: string;
+export interface UserPermissionsManagerProps {
+  userId: string;
+  showCategories?: boolean;
+  isReadOnly?: boolean;
+  onPermissionsChange?: (permissions: Permission[]) => Promise<void> | void;
 }
 
-const DEFAULT_MEMBERS: TeamMember[] = [
-  {
-    id: "mem_1",
-    email: "owner@pluto.storage",
-    role: "Owner",
-    status: "Active",
-    joinedAt: "2026-01-10",
-  },
-  {
-    id: "mem_2",
-    email: "lead-dev@pluto.storage",
-    role: "Developer",
-    status: "Active",
-    joinedAt: "2026-03-15",
-  },
-  {
-    id: "mem_3",
-    email: "support-agent@pluto.storage",
-    role: "Support",
-    status: "Invited",
-    joinedAt: "2026-05-27",
-  },
+const CATEGORY_ORDER: Permission["category"][] = [
+  "payment",
+  "webhook",
+  "analytics",
+  "admin",
 ];
 
-const ROLE_DESCRIPTIONS: Record<TeamRole, string> = {
-  Owner: "Full access to billing, key rotation, database, and all settings.",
-  Administrator: "Can manage all settings, webhooks, and team members except key rotation.",
-  Developer: "Can read/write API keys, view payment logs, and test in sandbox.",
-  Support: "Can view payments, access dashboard charts, and process refunds.",
-  Viewer: "Read-only access to dashboard statistics and payment logs.",
+const rowVariants = {
+  hidden: { opacity: 0, y: -6 },
+  visible: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 380, damping: 28 } },
+  exit: { opacity: 0, y: 6, transition: { duration: 0.15 } },
 };
 
-export default function UserPermissionsManager() {
-  const [members, setMembers] = useState<TeamMember[]>([]);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<TeamRole>("Developer");
-  const [isInviting, setIsInviting] = useState(false);
-  const [filterRole, setFilterRole] = useState<string>("All");
+const categoryVariants = {
+  hidden: { opacity: 0, height: 0, overflow: "hidden" },
+  visible: { opacity: 1, height: "auto", overflow: "visible", transition: { type: "spring", stiffness: 300, damping: 30 } },
+  exit: { opacity: 0, height: 0, overflow: "hidden", transition: { duration: 0.2 } },
+};
 
-  // Load from localStorage or default on mount
-  useEffect(() => {
-    const saved = localStorage.getItem("pluto_team_members");
-    if (saved) {
-      try {
-        setMembers(JSON.parse(saved));
-      } catch {
-        setMembers(DEFAULT_MEMBERS);
-      }
-    } else {
-      setMembers(DEFAULT_MEMBERS);
-      localStorage.setItem("pluto_team_members", JSON.stringify(DEFAULT_MEMBERS));
-    }
-  }, []);
+// ---------- sub-components ----------
 
-  const saveToStorage = (updatedList: TeamMember[]) => {
-    localStorage.setItem("pluto_team_members", JSON.stringify(updatedList));
-  };
+interface PermissionRowProps {
+  permission: Permission;
+  isPending: boolean;
+  isReadOnly: boolean;
+  onToggle: (id: string) => void;
+}
 
-  const handleInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inviteEmail.trim()) {
-      toast.error("Please enter a valid email address.");
-      return;
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(inviteEmail.trim())) {
-      toast.error("Invalid email address format.");
-      return;
-    }
-
-    if (members.some((m) => m.email.toLowerCase() === inviteEmail.trim().toLowerCase())) {
-      toast.error("A team member with this email already exists.");
-      return;
-    }
-
-    setIsInviting(true);
-
-    const newMember: TeamMember = {
-      id: `mem_${Date.now()}`,
-      email: inviteEmail.trim().toLowerCase(),
-      role: inviteRole,
-      status: "Invited",
-      joinedAt: new Date().toISOString().split("T")[0],
-    };
-
-    // Keep reference of previous list for rollback if API fails
-    const previousMembers = [...members];
-
-    // Optimistic Update: Immediately add the new member to the list
-    const optimisticallyUpdatedMembers = [...members, newMember];
-    setMembers(optimisticallyUpdatedMembers);
-    setInviteEmail("");
-
-    try {
-      // Simulate API network request latency
-      await new Promise((resolve, reject) => {
-        setTimeout(() => {
-          // 95% success rate for simulation
-          if (Math.random() > 0.05) {
-            resolve(true);
-          } else {
-            reject(new Error("API server timed out"));
-          }
-        }, 800);
-      });
-
-      saveToStorage(optimisticallyUpdatedMembers);
-      toast.success(`Successfully invited ${newMember.email} as ${newMember.role}`);
-    } catch (err: unknown) {
-      // Revert/Rollback on failure
-      setMembers(previousMembers);
-      const msg = err instanceof Error ? err.message : "Failed to invite user";
-      toast.error(`Error: ${msg}. Reverted state.`);
-    } finally {
-      setIsInviting(false);
-    }
-  };
-
-  const handleRoleChange = async (memberId: string, newRole: TeamRole) => {
-    const previousMembers = [...members];
-
-    // Optimistic Update: Immediately update role in list state
-    const optimisticallyUpdatedMembers = members.map((m) =>
-      m.id === memberId ? { ...m, role: newRole } : m
-    );
-    setMembers(optimisticallyUpdatedMembers);
-
-    try {
-      // Simulate API latency
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      saveToStorage(optimisticallyUpdatedMembers);
-      toast.success("Team member role successfully updated.");
-    } catch {
-      // Revert/Rollback on failure
-      setMembers(previousMembers);
-      toast.error("Failed to update role. Reverted state.");
-    }
-  };
-
-  const handleRevoke = async (memberId: string) => {
-    const targetMember = members.find((m) => m.id === memberId);
-    if (!targetMember) return;
-
-    if (targetMember.role === "Owner") {
-      toast.error("The account Owner's permissions cannot be revoked.");
-      return;
-    }
-
-    if (!confirm(`Are you sure you want to revoke access for ${targetMember.email}?`)) {
-      return;
-    }
-
-    const previousMembers = [...members];
-
-    // Optimistic Update: Immediately remove member from list state
-    const optimisticallyUpdatedMembers = members.filter((m) => m.id !== memberId);
-    setMembers(optimisticallyUpdatedMembers);
-
-    try {
-      // Simulate API latency
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      saveToStorage(optimisticallyUpdatedMembers);
-      toast.success(`Revoked access for ${targetMember.email}`);
-    } catch {
-      // Revert/Rollback on failure
-      setMembers(previousMembers);
-      toast.error("Failed to revoke access. Reverted state.");
-    }
-  };
-
-  const filteredMembers = filterRole === "All"
-    ? members
-    : members.filter((m) => m.role === filterRole);
-
+function PermissionRow({ permission, isPending, isReadOnly, onToggle }: PermissionRowProps) {
+  const disabled = isReadOnly || isPending;
   return (
-    <div className="flex flex-col gap-8">
-      {/* Invite Member form */}
-      <section 
-        aria-labelledby="invite-section-title"
-        className="rounded-2xl border border-[#E8E8E8] bg-white p-6 md:p-8 flex flex-col gap-6"
-      >
-        <div>
-          <h2 id="invite-section-title" className="text-lg font-bold text-[#0A0A0A] mb-1">
-            Invite Team Member
-          </h2>
-          <p className="text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
-            Add team members and define their exact workspace accessibility level.
-          </p>
+    <motion.div
+      key={permission.id}
+      variants={rowVariants}
+      initial="hidden"
+      animate="visible"
+      exit="exit"
+      className="flex items-center justify-between py-3 border-b border-[#F5F5F5] last:border-0"
+    >
+      <div className="flex flex-col gap-0.5 flex-1 mr-4">
+        <span className="text-sm font-semibold text-[#0A0A0A]">{permission.name}</span>
+        <span className="text-xs text-[#6B6B6B]">{permission.description}</span>
+      </div>
+
+      <label className="relative flex items-center cursor-pointer select-none">
+        <input
+          type="checkbox"
+          aria-label={permission.name}
+          checked={permission.granted}
+          disabled={disabled}
+          onChange={() => onToggle(permission.id)}
+          className="sr-only peer"
+        />
+        <div
+          className={[
+            "w-10 h-6 rounded-full transition-colors duration-200",
+            "peer-focus-visible:ring-2 peer-focus-visible:ring-[#4a6fa5] peer-focus-visible:ring-offset-2",
+            permission.granted ? "bg-[#4a6fa5]" : "bg-[#E8E8E8]",
+            disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+          ].join(" ")}
+        >
+          <motion.div
+            className="absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm"
+            animate={{ left: permission.granted ? "22px" : "4px" }}
+            transition={{ type: "spring", stiffness: 500, damping: 30 }}
+          />
         </div>
+      </label>
+    </motion.div>
+  );
+}
 
-        <form onSubmit={handleInvite} className="flex flex-col gap-4 md:flex-row md:items-end">
-          <div className="flex-1 flex flex-col gap-2">
-            <label htmlFor="invite-email-input" className="text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B]">
-              Email Address
-            </label>
-            <input
-              id="invite-email-input"
-              type="email"
-              placeholder="e.g. dev@pluto.storage"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              disabled={isInviting}
-              className="h-11 rounded-xl border border-[#E8E8E8] bg-[#F9F9F9] px-4 text-sm text-[#0A0A0A] placeholder-slate-400 focus:border-[#4a6fa5] focus:bg-white outline-none transition-all disabled:opacity-50"
-            />
-          </div>
+interface CategorySectionProps {
+  category: Permission["category"];
+  items: Permission[];
+  isExpanded: boolean;
+  pendingIds: Set<string>;
+  isReadOnly: boolean;
+  label: string;
+  onToggleCategory: (category: string) => void;
+  onTogglePermission: (id: string) => void;
+}
 
-          <div className="w-full md:w-56 flex flex-col gap-2">
-            <label htmlFor="invite-role-select" className="text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B]">
-              Workspace Role
-            </label>
-            <select
-              id="invite-role-select"
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as TeamRole)}
-              disabled={isInviting}
-              className="h-11 rounded-xl border border-[#E8E8E8] bg-[#F9F9F9] px-4 text-xs font-bold uppercase tracking-wider text-[#0A0A0A] focus:border-[#4a6fa5] focus:bg-white outline-none transition-all disabled:opacity-50"
-            >
-              <option value="Administrator">Administrator</option>
-              <option value="Developer">Developer</option>
-              <option value="Support">Support</option>
-              <option value="Viewer">Viewer</option>
-            </select>
-          </div>
+function CategorySection({
+  category,
+  items,
+  isExpanded,
+  pendingIds,
+  isReadOnly,
+  label,
+  onToggleCategory,
+  onTogglePermission,
+}: CategorySectionProps) {
+  return (
+    <div className="border border-[#E8E8E8] rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => onToggleCategory(category)}
+        aria-controls={`category-${category}`}
+        aria-expanded={isExpanded}
+        className="w-full flex items-center justify-between px-5 py-3.5 bg-[#F9F9F9] hover:bg-[#F3F3F3] transition-colors"
+      >
+        <span className="text-xs font-bold uppercase tracking-widest text-[#0A0A0A]">
+          {label}
+        </span>
+        <motion.svg
+          className="h-4 w-4 text-[#6B6B6B]"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+          animate={{ rotate: isExpanded ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </motion.svg>
+      </button>
 
-          <button
-            type="submit"
-            disabled={isInviting || !inviteEmail}
-            className="h-11 rounded-xl bg-[#4a6fa5] px-6 text-xs font-bold uppercase tracking-widest text-white hover:bg-[#3d6494] disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm flex items-center justify-center gap-2 whitespace-nowrap active:scale-[0.98]"
+      <AnimatePresence initial={false}>
+        {isExpanded && (
+          <motion.section
+            id={`category-${category}`}
+            role="region"
+            aria-label={label}
+            variants={categoryVariants}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+            className="px-5"
           >
-            {isInviting ? (
-              <>
-                <svg className="h-4 w-4 animate-spin text-white" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                Sending...
-              </>
-            ) : (
-              "Send Invite"
-            )}
-          </button>
-        </form>
-
-        {/* Role description box */}
-        <div className="rounded-xl border border-pluto-200 bg-pluto-50 p-4">
-          <p className="text-xs font-bold text-pluto-800 uppercase tracking-widest mb-1.5">
-            Role Access Level: {inviteRole}
-          </p>
-          <p className="text-xs text-pluto-700 leading-relaxed font-medium">
-            {ROLE_DESCRIPTIONS[inviteRole]}
-          </p>
-        </div>
-      </section>
-
-      {/* Member List section */}
-      <section 
-        aria-labelledby="member-section-title"
-        className="rounded-2xl border border-[#E8E8E8] bg-white p-6 md:p-8 flex flex-col gap-6"
-      >
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 id="member-section-title" className="text-lg font-bold text-[#0A0A0A] mb-1">
-              Active Workspace Team
-            </h2>
-            <p className="text-xs font-semibold text-[#6B6B6B] uppercase tracking-wider">
-              {filteredMembers.length} active or pending members on your merchant account.
-            </p>
-          </div>
-
-          {/* Role Filter */}
-          <div className="flex items-center gap-2 self-start sm:self-auto">
-            <label htmlFor="role-filter-select" className="text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B] whitespace-nowrap">
-              Filter:
-            </label>
-            <select
-              id="role-filter-select"
-              value={filterRole}
-              onChange={(e) => setFilterRole(e.target.value)}
-              className="h-9 rounded-lg border border-[#E8E8E8] bg-white px-2 text-[10px] font-bold uppercase tracking-wider text-[#0A0A0A] outline-none"
-            >
-              <option value="All">All Roles</option>
-              <option value="Owner">Owner</option>
-              <option value="Administrator">Administrator</option>
-              <option value="Developer">Developer</option>
-              <option value="Support">Support</option>
-              <option value="Viewer">Viewer</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Table of Members */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-[#E8E8E8] pb-3">
-                <th className="pb-3 text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B]">Member / Email</th>
-                <th className="pb-3 text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B]">Workspace Role</th>
-                <th className="pb-3 text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B]">Connection</th>
-                <th className="pb-3 text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B] text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <AnimatePresence initial={false}>
-                {filteredMembers.map((member) => (
-                  <motion.tr
-                    key={member.id}
-                    initial={{ opacity: 0, height: 0, y: -10 }}
-                    animate={{ opacity: 1, height: "auto", y: 0 }}
-                    exit={{ opacity: 0, height: 0, y: 10 }}
-                    transition={{ type: "spring", stiffness: 350, damping: 26 }}
-                    className="border-b border-[#F5F5F5] group/row"
-                  >
-                    <td className="py-4.5 pr-4 align-middle">
-                      <div className="flex flex-col gap-1">
-                        <span className="text-sm font-bold text-[#0A0A0A]">{member.email}</span>
-                        <span className="text-[9px] font-bold uppercase tracking-widest text-[#A0A0A0]">
-                          Joined on {member.joinedAt}
-                        </span>
-                      </div>
-                    </td>
-
-                    <td className="py-4.5 pr-4 align-middle">
-                      {member.role === "Owner" ? (
-                        <span className="text-xs font-bold text-pluto-800 uppercase tracking-widest bg-pluto-50 border border-pluto-200 rounded-lg px-3 py-1">
-                          Owner
-                        </span>
-                      ) : (
-                        <select
-                          aria-label={`Change role for ${member.email}`}
-                          value={member.role}
-                          onChange={(e) => handleRoleChange(member.id, e.target.value as TeamRole)}
-                          className="h-8 rounded-lg border border-[#E8E8E8] bg-transparent px-2.5 text-xs font-bold uppercase tracking-wider text-[#0A0A0A] hover:bg-[#F9F9F9] focus:bg-white focus:border-[#4a6fa5] outline-none transition-colors"
-                        >
-                          <option value="Administrator">Admin</option>
-                          <option value="Developer">Developer</option>
-                          <option value="Support">Support</option>
-                          <option value="Viewer">Viewer</option>
-                        </select>
-                      )}
-                    </td>
-
-                    <td className="py-4.5 pr-4 align-middle">
-                      <div className="flex items-center gap-2">
-                        <span 
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            member.status === "Active" ? "bg-green-500 animate-none" : "bg-[#8A8A8A] animate-pulse"
-                          }`} 
-                        />
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-[#6B6B6B]">
-                          {member.status}
-                        </span>
-                      </div>
-                    </td>
-
-                    <td className="py-4.5 align-middle text-right">
-                      {member.role !== "Owner" && (
-                        <button
-                          type="button"
-                          onClick={() => handleRevoke(member.id)}
-                          aria-label={`Revoke access for ${member.email}`}
-                          className="rounded-lg border border-red-100 bg-red-50/50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-red-600 hover:bg-red-100 active:scale-[0.96] transition-all"
-                        >
-                          Revoke
-                        </button>
-                      )}
-                    </td>
-                  </motion.tr>
-                ))}
-              </AnimatePresence>
-
-              {filteredMembers.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="py-12 text-center text-xs font-semibold text-[#6B6B6B] uppercase tracking-widest">
-                    No team members match this filter.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            <AnimatePresence initial={false}>
+              {items.map((p) => (
+                <PermissionRow
+                  key={p.id}
+                  permission={p}
+                  isPending={pendingIds.has(p.id)}
+                  isReadOnly={isReadOnly}
+                  onToggle={onTogglePermission}
+                />
+              ))}
+            </AnimatePresence>
+          </motion.section>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
+
+// ---------- main component ----------
+
+export function UserPermissionsManager({
+  userId: _userId,
+  showCategories = false,
+  isReadOnly = false,
+  onPermissionsChange,
+}: UserPermissionsManagerProps) {
+  const t = useTranslations("permissions");
+  const { permissions, setPermissions } = usePermissionsStore();
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
+    new Set(CATEGORY_ORDER)
+  );
+
+  const handleToggle = useCallback(
+    async (permissionId: string) => {
+      if (isReadOnly || pendingIds.has(permissionId)) return;
+
+      const previous = permissions.map((p: Permission) => ({ ...p }));
+      const updated = permissions.map((p: Permission) =>
+        p.id === permissionId
+          ? { ...p, granted: !p.granted, lastModified: new Date().toISOString() }
+          : p
+      );
+
+      setPermissions(updated);
+      setPendingIds((ids: Set<string>) => new Set(ids).add(permissionId));
+
+      try {
+        await onPermissionsChange?.(updated);
+        toast.success(t("updateSuccess"));
+      } catch {
+        setPermissions(previous);
+        toast.error(t("updateError"));
+      } finally {
+        setPendingIds((ids: Set<string>) => {
+          const next = new Set(ids);
+          next.delete(permissionId);
+          return next;
+        });
+      }
+    },
+    [isReadOnly, pendingIds, permissions, setPermissions, onPermissionsChange, t]
+  );
+
+  const handleToggleCategory = useCallback((category: string) => {
+    setExpandedCategories((prev: Set<string>) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }, []);
+
+  return (
+    <section
+      role="region"
+      aria-label={t("manager")}
+      aria-busy={pendingIds.size > 0}
+      className="flex flex-col gap-4"
+    >
+      {isReadOnly && (
+        <p className="text-xs font-semibold text-[#6B6B6B] bg-[#F9F9F9] border border-[#E8E8E8] rounded-lg px-4 py-2.5">
+          {t("readOnlyNotice")}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {showCategories ? (
+          CATEGORY_ORDER.map((category) => {
+            const items = permissions.filter((p: Permission) => p.category === category);
+            if (items.length === 0) return null;
+            return (
+              <CategorySection
+                key={category}
+                category={category}
+                items={items}
+                isExpanded={expandedCategories.has(category)}
+                pendingIds={pendingIds}
+                isReadOnly={isReadOnly}
+                label={t(`category.${category}`)}
+                onToggleCategory={handleToggleCategory}
+                onTogglePermission={handleToggle}
+              />
+            );
+          })
+        ) : (
+          <AnimatePresence initial={false}>
+            {permissions.map((p: Permission) => (
+              <PermissionRow
+                key={p.id}
+                permission={p}
+                isPending={pendingIds.has(p.id)}
+                isReadOnly={isReadOnly}
+                onToggle={handleToggle}
+              />
+            ))}
+          </AnimatePresence>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export default UserPermissionsManager;
