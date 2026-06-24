@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useCallback, useRef } from "react";
 
-interface Balance {
+export interface Balance {
   code: string;
   balance: string;
 }
@@ -13,29 +13,33 @@ interface UseBalanceSyncOptions {
   horizonUrl?: string;
 }
 
-interface BalanceSyncState {
+export interface BalanceSyncState {
   balances: Balance[];
   isLoading: boolean;
   lastUpdated: Date | null;
   error: string | null;
+  /** Balance values that were set optimistically before the next poll confirms them. */
+  optimisticBalances: Record<string, string>;
 }
 
-type BalanceSyncAction =
+export type BalanceSyncAction =
   | { type: "FETCH_START" }
   | { type: "FETCH_SUCCESS"; balances: Balance[]; at: Date }
-  | { type: "FETCH_ERROR"; error: string };
+  | { type: "FETCH_ERROR"; error: string }
+  | { type: "OPTIMISTIC_UPDATE"; code: string; balance: string };
 
-const initialState: BalanceSyncState = {
+export const initialBalanceSyncState: BalanceSyncState = {
   balances: [],
   isLoading: false,
   lastUpdated: null,
   error: null,
+  optimisticBalances: {},
 };
 
 // Consolidating the related pieces of state into a reducer keeps the
 // fetch lifecycle (start → success → error) explicit and prevents the
 // inconsistent intermediate renders that separate setState calls can cause.
-function balanceSyncReducer(
+export function balanceSyncReducer(
   state: BalanceSyncState,
   action: BalanceSyncAction,
 ): BalanceSyncState {
@@ -44,42 +48,76 @@ function balanceSyncReducer(
       return { ...state, isLoading: true, error: null };
     case "FETCH_SUCCESS":
       return {
+        ...state,
         balances: action.balances,
         isLoading: false,
         lastUpdated: action.at,
         error: null,
+        // Clear optimistic overrides once the server value arrives
+        optimisticBalances: {},
       };
     case "FETCH_ERROR":
       return { ...state, isLoading: false, error: action.error };
+    case "OPTIMISTIC_UPDATE":
+      return {
+        ...state,
+        optimisticBalances: {
+          ...state.optimisticBalances,
+          [action.code]: action.balance,
+        },
+      };
     default:
       return state;
   }
 }
 
 /**
- * Hook for real-time balance synchronization with polling and race condition prevention.
+ * Merge confirmed balances with any pending optimistic overrides so callers
+ * always see a consistent view without waiting for the next poll.
+ */
+function applyOptimisticOverrides(
+  balances: Balance[],
+  optimistic: Record<string, string>,
+): Balance[] {
+  if (Object.keys(optimistic).length === 0) return balances;
+  const merged = balances.map((b) =>
+    b.code in optimistic ? { ...b, balance: optimistic[b.code] } : b,
+  );
+  for (const [code, balance] of Object.entries(optimistic)) {
+    if (!merged.find((b) => b.code === code)) {
+      merged.push({ code, balance });
+    }
+  }
+  return merged;
+}
+
+/**
+ * Hook for real-time balance synchronization with polling, race condition
+ * prevention, and optimistic updates (issue #956).
+ *
+ * Screen-reader-ready: returns `ariaLabel` and `liveRegionText` for callers
+ * to wire up accessible live regions (issue #955).
  */
 export function useBalanceSync(
   merchantId: string | null | undefined,
   apiKey: string | null | undefined,
-  options: UseBalanceSyncOptions = {}
+  options: UseBalanceSyncOptions = {},
 ) {
   const {
     pollingInterval = 30000,
     onUpdate,
     enabled = true,
     address = null,
-    horizonUrl = "https://horizon-testnet.stellar.org"
+    horizonUrl = "https://horizon-testnet.stellar.org",
   } = options;
-  const [state, dispatch] = useReducer(balanceSyncReducer, initialState);
-  const { balances, isLoading, lastUpdated, error } = state;
+
+  const [state, dispatch] = useReducer(balanceSyncReducer, initialBalanceSyncState);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchBalances = useCallback(async () => {
     if (!enabled) return;
     if (!address && (!merchantId || !apiKey)) return;
 
-    // Cancel previous request to prevent race conditions
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -90,7 +128,6 @@ export function useBalanceSync(
       let newBalances: Balance[] = [];
 
       if (address) {
-        // Fetch from Horizon directly if address is provided
         const response = await fetch(`${horizonUrl}/accounts/${address}`, {
           signal: abortControllerRef.current.signal,
         });
@@ -101,17 +138,12 @@ export function useBalanceSync(
           balance: b.balance,
         }));
       } else {
-        // Fetch from merchant API
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
         const response = await fetch(`${apiUrl}/api/merchant/balances`, {
-          headers: {
-            "x-api-key": apiKey!,
-          },
+          headers: { "x-api-key": apiKey! },
           signal: abortControllerRef.current.signal,
         });
-
         if (!response.ok) throw new Error("Failed to fetch balances from API");
-
         const data = await response.json();
         newBalances = (data.balances || []).map((b: any) => ({
           code: b.asset || b.code,
@@ -130,17 +162,12 @@ export function useBalanceSync(
   }, [merchantId, apiKey, enabled, onUpdate, address, horizonUrl]);
 
   /**
-   * Optimistically set a balance locally so the UI reflects a just-submitted
-   * change immediately; the next poll reconciles it with the authoritative value.
+   * Optimistically update a single balance (issue #956).
+   * The value is shown immediately; the next poll from the server clears the
+   * override and replaces it with the authoritative value.
    */
   const applyOptimistic = useCallback((code: string, balance: string) => {
-    setBalances((prev) => {
-      const index = prev.findIndex((b) => b.code === code);
-      if (index === -1) return [...prev, { code, balance }];
-      const next = [...prev];
-      next[index] = { ...next[index], balance };
-      return next;
-    });
+    dispatch({ type: "OPTIMISTIC_UPDATE", code, balance });
   }, []);
 
   useEffect(() => {
@@ -150,20 +177,38 @@ export function useBalanceSync(
       const interval = setInterval(fetchBalances, pollingInterval);
       return () => {
         clearInterval(interval);
-        if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-        }
+        abortControllerRef.current?.abort();
       };
     }
   }, [fetchBalances, enabled, pollingInterval]);
 
+  const visibleBalances = applyOptimisticOverrides(
+    state.balances,
+    state.optimisticBalances,
+  );
+
+  // Derive an accessible description for live regions (issue #955)
+  const liveRegionText = state.isLoading
+    ? "Syncing balances…"
+    : state.error
+      ? `Balance sync error: ${state.error}`
+      : state.lastUpdated
+        ? `Balances updated at ${state.lastUpdated.toLocaleTimeString()}.`
+        : "";
+
   return {
-    balances,
-    isLoading,
-    lastUpdated,
-    error,
+    balances: visibleBalances,
+    isLoading: state.isLoading,
+    lastUpdated: state.lastUpdated,
+    error: state.error,
     refresh: fetchBalances,
     applyOptimistic,
-    isStale: lastUpdated ? Date.now() - lastUpdated.getTime() > pollingInterval * 2 : true,
+    isStale: state.lastUpdated
+      ? Date.now() - state.lastUpdated.getTime() > pollingInterval * 2
+      : true,
+    /** Aria-label for the balance region — pass to aria-label on the wrapper. */
+    ariaLabel: "Real-time balance information",
+    /** Text to place in an aria-live region so screen readers announce updates. */
+    liveRegionText,
   };
 }

@@ -1,6 +1,57 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useBalanceSync } from "./useBalanceSync";
+import {
+  useBalanceSync,
+  balanceSyncReducer,
+  initialBalanceSyncState,
+} from "./useBalanceSync";
+
+// ─── Pure reducer tests (no hook setup needed) ────────────────────────────────
+
+describe("balanceSyncReducer", () => {
+  it("FETCH_START sets isLoading and clears error", () => {
+    const s = balanceSyncReducer(
+      { ...initialBalanceSyncState, error: "prev error" },
+      { type: "FETCH_START" },
+    );
+    expect(s.isLoading).toBe(true);
+    expect(s.error).toBeNull();
+  });
+
+  it("FETCH_SUCCESS stores balances and clears optimisticBalances", () => {
+    const withOptimistic = balanceSyncReducer(
+      initialBalanceSyncState,
+      { type: "OPTIMISTIC_UPDATE", code: "XLM", balance: "5" },
+    );
+    const at = new Date();
+    const s = balanceSyncReducer(withOptimistic, {
+      type: "FETCH_SUCCESS",
+      balances: [{ code: "XLM", balance: "10" }],
+      at,
+    });
+    expect(s.balances).toEqual([{ code: "XLM", balance: "10" }]);
+    expect(s.optimisticBalances).toEqual({});
+    expect(s.lastUpdated).toBe(at);
+  });
+
+  it("OPTIMISTIC_UPDATE stores the override without touching balances", () => {
+    const s = balanceSyncReducer(
+      initialBalanceSyncState,
+      { type: "OPTIMISTIC_UPDATE", code: "USDC", balance: "50" },
+    );
+    expect(s.optimisticBalances).toEqual({ USDC: "50" });
+    expect(s.balances).toHaveLength(0);
+  });
+
+  it("FETCH_ERROR stores the message and clears loading", () => {
+    const loading = balanceSyncReducer(initialBalanceSyncState, { type: "FETCH_START" });
+    const s = balanceSyncReducer(loading, { type: "FETCH_ERROR", error: "oops" });
+    expect(s.isLoading).toBe(false);
+    expect(s.error).toBe("oops");
+  });
+});
+
+// ─── Hook integration tests ───────────────────────────────────────────────────
 
 describe("useBalanceSync", () => {
   beforeEach(() => {
